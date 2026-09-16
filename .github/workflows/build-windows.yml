@@ -1,15 +1,8 @@
 name: Build Windows
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to build"
-        required: true
-        default: "v0.1.0"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -19,20 +12,10 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Resolve tag
-        id: release
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -54,7 +37,7 @@ jobs:
       - name: Upload installers
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
+          tag_name: ${{ github.event.release.tag_name }}
           files: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
