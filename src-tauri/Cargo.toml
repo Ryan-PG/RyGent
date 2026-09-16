@@ -1,0 +1,135 @@
+[package]
+name = "ai-workspace"
+version = "0.1.0"
+description = "AI Coding Workspace - an isolated desktop workspace for running AI coding agents"
+authors = ["Ryan Heida"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "ai_workspace_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+# Native folder picker for the "New Workspace" dialog (spec section 12:
+# "Project folder"). The dialog itself is opened from the frontend through
+# `@tauri-apps/plugin-dialog`, so the Rust-side wiring is only the plugin
+# registration in `lib.rs` plus the `dialog:allow-open` capability in
+# `capabilities/default.json`. The UI keeps an editable path field as a manual
+# fallback for a window where the picker is unavailable.
+tauri-plugin-dialog = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime (process/session management, PTY pump tasks)
+tokio = { version = "1", features = ["full"] }
+
+# Persistence (spec section 14) - bundled SQLite, no system dependency.
+# NOTE: the `bundled` feature compiles SQLite from C source, so a C compiler
+# (MSVC `cl.exe` on Windows) must be available when building this crate.
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+# OS-native secure credential storage (spec section 17).
+# NOTE: pinned to major v3 by design; keyring v4 exists upstream but the
+# Milestone 2 implementation targets the v3 API.
+#
+# IMPORTANT: keyring v3 has no default features and selects no backend on its
+# own - with none enabled it compiles against an in-process `mock` store that
+# accepts secrets but never persists them (each `Entry::new` gets a fresh
+# throwaway credential, so a later read reports "no entry"). A backend must be
+# chosen per platform, which the target-specific tables at the bottom of this
+# file do: Windows Credential Manager, macOS Keychain, Linux Secret Service.
+# `default-features = false` just documents that nothing is implied.
+keyring = { version = "3", default-features = false }
+
+# HTTP client for the provider connectivity check ("Test provider", spec
+# section 12). Default features are disabled so no system TLS stack (OpenSSL)
+# is required: rustls with bundled webpki roots is used on every platform.
+# NOTE: confirm the resolved minor version is the expected 0.12 line at the
+# first `cargo check`.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
+
+# Id generation for provider/workspace records (mirrors `crypto.randomUUID()`
+# on the frontend).
+uuid = { version = "1", features = ["v4"] }
+
+# PTY for interactive agent processes (spec section 11), added for Milestone 3
+portable-pty = "0.9"
+
+# Error handling and logging
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+
+
+# ---------------------------------------------------------------------------
+# Platform-specific secret store backends (spec section 17).
+#
+# Cargo merges these with the `keyring` entry above for the matching target, so
+# each supported platform (spec section 3: Windows, macOS, Linux) gets exactly
+# one native backend, while other targets still build. TODO(first compile):
+# confirm the feature names against the resolved keyring 3.x - the Linux pair
+# (`sync-secret-service` + `crypto-rust`) is the synchronous Secret Service
+# combination; `linux-native` (zbus/async) is the alternative if it does not
+# build, and a headless Linux box with no Secret Service will surface as a
+# `SecretStoreError::Platform` at runtime either way.
+# ---------------------------------------------------------------------------
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+# Orphan prevention (spec section 15): one Job Object per session, created with
+# `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the kernel terminates the agent's
+# process tree if this application dies without being able to stop it. See
+# `src/process/guard.rs`.
+#
+# Features are the minimum that compiles the four calls used there:
+# `Win32_System_JobObjects` (CreateJobObject/SetInformationJobObject/
+# AssignProcessToJobObject/IsProcessInJob), `Win32_System_Threading` (OpenProcess
+# and its access rights - also the feature `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
+# itself is gated on), and `Win32_Foundation` (HANDLE/CloseHandle). The brief for
+# this step named those three; `Win32_Security` is a fourth and is not optional:
+# upstream gates `CreateJobObjectW` behind it because the call takes a
+# `SECURITY_ATTRIBUTES` out-parameter, even when - as here - it is passed null.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+# The Unix half of orphan prevention (spec section 15): the guard signals the
+# agent's process group (SIGTERM, then SIGKILL) when it is released, which needs
+# `kill(2)`/`getpgid(3)` and the signal constants. `portable-pty` already depends
+# on `libc`, so this adds no new code to the build, only a direct path to it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

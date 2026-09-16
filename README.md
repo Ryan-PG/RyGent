@@ -1,0 +1,317 @@
+# AI Coding Workspace
+
+A cross-platform desktop application for running AI coding agents in isolated, per-project workspaces. Each project gets its own tab in a browser-like UI, its own agent process and terminal, and its own process environment, so several agents can run side by side without sharing state, credentials, or configuration. The first supported agent is **Claude Code**; the Rust core exposes an `AgentAdapter` seam so other agents can be added later without reworking the architecture. Built with Tauri 2 (Rust core) + React + TypeScript + Vite.
+
+The application is the workspace — it does not depend on VS Code or any other editor. All native capability (PTY, process control, persistence, secrets) lives in Rust; the React layer is a thin UI over Tauri commands.
+
+**Authoritative references:** [AI Coding Workspace - Implementation Prompt.md](./AI%20Coding%20Workspace%20-%20Implementation%20Prompt.md) (requirements spec) and [IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md) (milestones, decisions, blockers).
+
+## Project Status
+
+**Milestone 5 of 6 — lifecycle hardening is implemented on both sides, compiled, and unit-tested: `cargo check` clean (0 warnings), `cargo test` 140 passed / 0 failed, `npm test` 144 frontend tests passed across 9 files, `npm run build` exit 0. M5 changed no user-visible behaviour; it added the things that make the existing behaviour trustworthy — a real frontend test harness (Vitest + jsdom + React Testing Library, `npm test`), an OS-level backstop against orphaned agents when the app is hard-killed (a Windows Job Object with kill-on-close, plus a Unix process-group path), and the closure of the real gaps in the spec's failure list and lifecycle cases. A **post-M5 fix pass (2026-09-15)** then landed two user-visible corrections on both sides of the boundary: a session's provider credential is presented as a **bearer token** (`ANTHROPIC_AUTH_TOKEN`) and no longer as an API-key header (the M2 decision, reversed — the gateways this app is pointed at answer HTTP 401 when an `X-Api-Key` header is also sent), with the connectivity test sending that same bearer header only; and a provider profile can declare the model's **real context window** (`maxContextTokens` → `CLAUDE_CODE_MAX_CONTEXT_TOKENS`) for a model Claude Code's model catalog does not describe. A **frontend-only pass (2026-09-15)** then made the embedded terminal usable: copying out of it (`Ctrl+C` **with a selection**, `Ctrl+Shift+C`, a right-click menu, the toolbar **Copy** button), pasting (`Ctrl+Shift+V`, with the native `Ctrl+V` left intact), and scrolling (10 000 lines of scrollback, a visible themed scrollbar, `Shift+PageUp`/`PageDown`, `Ctrl+Shift+Home`/`End`) — with `Ctrl+C` **without** a selection still sending `SIGINT` to the agent, which is the rule the whole design follows from. A **second frontend-only fix pass (2026-09-15)** repaired the tab bar's `Open ▾` list, which rendered but was clipped out of view and unclickable in the running app: it is now portaled to `<body>` and placed from the trigger's screen rectangle instead of being anchored inside the horizontally-scrolling tab strip. What is *not* verified is the app running: no `npm run tauri dev` / GUI session has been observed in this environment, so the window, the New/Edit dialog, the provider form's new *Max context tokens* field, the native folder picker, xterm rendering, Tauri event delivery, the terminal's clipboard/scroll behaviour in WebView2 and a real interactive `claude` session have never been seen working — and whether the bearer header now satisfies the user's gateway can only be confirmed against that live endpoint. macOS/Linux are untested too, including the Unix half of the guard, which has never been compiled.**
+
+| Milestone | Scope | State |
+| --- | --- | --- |
+| M1 — Scaffold | Tauri 2 + React + TS + Vite at repo root; Rust module seams (`AgentAdapter`, `SecretStore`, `Storage`); frontend shell with tabs and stub panels | **Complete** |
+| M2 — Persistence & Secrets | SQLite schema + `user_version` migrator, provider profile CRUD, OS keyring secrets, provider management UI | **Complete — Rust compiled and unit-tested; frontend verified** |
+| M3 — Terminal & Agent Runtime | `process/` lifecycle state machine, `pty/` over `portable-pty`, `sessions/` manager with per-session isolation, `ClaudeCodeAdapter` spawn descriptions, session commands + `session-output:`/`session-state:` events, xterm.js view | **Code complete and unit-tested; GUI behavior not visually verified** |
+| M4 — Workspace Management | `WorkspaceManager` validation, six workspace commands, `ui_preferences` tab-set restore, `tauri-plugin-dialog` folder picker, real workspace tabs (create/edit/reopen/remove), persisted-workspace → startable-session path | **Code complete and unit-tested; GUI behavior not visually verified** |
+| M5 — Lifecycle Hardening & Tests | Graceful lifecycle, error handling, frontend test suite, orphan prevention under hard kills | **Complete — unit-tested on both sides; GUI behaviour not visually verified** |
+| Post-M5 fix pass (2026-09-15) | Bearer-token session credential (reverses the M2 API-key choice), bearer-only connectivity test, provider-declared context window (`maxContextTokens`, schema v2) + the provider-form field | **Complete — unit-tested on both sides; GUI behaviour not visually verified** |
+| M6 — Cross-Platform Verification & Packaging | Windows verification, installers/bundles | Not started — next |
+
+What that means for a user **today**: the app shell builds and runs, provider profiles are real (SQLite + OS keyring), workspaces are real (SQLite, validated against the filesystem), and the agent session runtime is implemented — each session gets its own PTY, its own process environment built from that workspace's provider, and its own `CLAUDE_CONFIG_DIR`. Creating, editing, reopening and removing workspaces all work through the UI code, and Start has a persisted workspace to launch from. Milestone 5 added no new screens; it hardened what was already there — a bounded graceful-then-forced stop, an OS-level backstop so a hard-killed app does not leave agents running on Windows, and tests on both sides of the boundary. The post-M5 fix pass then changed what a session actually sends — the provider credential as a bearer token, plus an optional declared context window — and added one field to the provider form for it (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`). What has **not** been exercised is the GUI itself: no screen has ever been rendered in a running window, the native folder picker has never been opened, no real `claude` process has been started by this application, and the new provider field has never been typed into. Treat this as a build to inspect and test-drive, not one to rely on for real work yet.
+
+Verified on the dev machine (Windows, rustc/cargo 1.98.1): `npm install`, `npm run build` (TypeScript + Vite) and `npm test` (Vitest, 9 files / 144 tests) all exit 0; `cargo check` reports 0 warnings/0 errors (0 with `--all-targets` too); `cargo test` runs 140 tests, all passing — real PTY round trips, a workspace created through the M4 commands and started as a session, the M5 lifecycle cases (graceful stop, forced stop, crash, restart after a crash) asserted against the processes the tests themselves start, and the post-M5 credential/window contract (the session environment names the bearer token and omits `ANTHROPIC_API_KEY`; the connectivity request carries `Authorization: Bearer …` and no `x-api-key`; a v1 database upgrades to v2 keeping its rows). Not verified: the GUI and everything that needs it (window, folder picker, xterm rendering, Tauri event delivery, the provider form's new field, a real interactive `claude` session), whether a live gateway now accepts the bearer token (no endpoint is available here), an ACL-denied project folder, and macOS/Linux — including the Unix half of the orphan guard, which has never been compiled. Exact commands and results are in [IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md).
+
+## Prerequisites
+
+| Requirement | Version / notes |
+| --- | --- |
+| Node.js | 22.x LTS recommended (dev machine verified on v22.22.0). Vite 8 requires Node ≥20.19 or ≥22.12 — Node 18 is **not** sufficient. |
+| npm | 10+ (dev machine verified on 10.9.4). Ships with Node. |
+| Rust toolchain | `rustup` + `cargo`, stable channel — <https://rustup.rs>. Dev machine verified on cargo/rustc **1.98.1**. Required for `npm run tauri dev` / `npm run tauri build` and for `cargo test`. |
+| Platform C++ build tools | Windows: MSVC Build Tools with the "Desktop development with C++" workload (install via Visual Studio Build Tools installer, or `winget install Microsoft.VisualStudio.2022.BuildTools`). macOS: Xcode Command Line Tools (`xcode-select --install`). Linux: the Tauri 2 system dependencies (webkit2gtk, libssl-dev, etc.). Also needed to compile the bundled SQLite. |
+| WebView2 Runtime (Windows) | Preinstalled on Windows 11 and current Windows 10. If missing, install the Microsoft Edge WebView2 Evergreen Runtime; Tauri's Windows installers also bundle a bootstrapper. Without it the app window cannot render. |
+| Claude Code CLI | Installed and on `PATH` (dev machine verified on **2.1.267**). The adapter resolves the executable by name (`claude`) from `PATH`; on Windows it prefers `.exe`/`.com`/`.cmd`/`.bat` over the extension-less name, because npm global installs ship both `claude` (a POSIX shell script, not launchable by `CreateProcessW`) and `claude.cmd`. Install per the official Claude Code docs, then restart the app so it inherits the updated `PATH`. |
+| Rust crates | No manual step — `cargo` fetches `tokio`, `rusqlite` (bundled SQLite, no system dependency), `keyring` v3, `reqwest`, `portable-pty` 0.9, `tauri-plugin-dialog`, `uuid`, `thiserror`, `log`, `env_logger` on first build, plus `windows` (Job Objects) on Windows and `libc` on Unix for the orphan guard. First Tauri build is slow (several minutes). |
+
+Frontend-only work needs just Node + npm — including `npm test`, which runs the frontend suite in jsdom with no Rust core, no keyring, no network and no `claude` process. Anything that produces or runs the desktop binary, or that runs `cargo test`, needs the Rust toolchain and platform build tools.
+
+## Getting Started (Development)
+
+```bash
+# 1. Install frontend dependencies
+npm install
+
+# 2. Frontend-only check: type-check + production build into dist/
+npm run build
+
+# 3. Frontend test suite (Vitest + jsdom + React Testing Library)
+#    No Rust core, no keyring, no network, no `claude` process.
+npm test
+
+# 4. Full desktop app in development (requires the Rust toolchain)
+#    Runs the Vite dev server on http://localhost:1420 and launches the Tauri window.
+npm run tauri dev
+
+# 5. Package the app (requires the Rust toolchain)
+npm run tauri build
+```
+
+Other scripts: `npm run dev` starts the Vite dev server alone (browser only — no Tauri APIs, so the Providers panel shows its "backend unavailable" notice while the tab shell keeps working), `npm run preview` serves the built `dist/`, and `npm test` runs the frontend suite once (`npx vitest` for watch mode).
+
+**Bare `cargo build` needs a `dist/` directory.** Tauri's `generate_context!` macro embeds the frontend from `frontendDist` (`../dist`). Running `cargo build` or `cargo check` inside `src-tauri/` on a clean checkout fails until `npm run build` has produced `dist/`. `npm run tauri dev` and `npm run tauri build` handle this for you via their `beforeDevCommand` / `beforeBuildCommand` hooks.
+
+## Using the App (as it exists at Milestone 5)
+
+The shell is a single window with a tab bar across the top, a content area, and a status bar at the bottom. Providers and workspaces are both backed by the Rust core; every tab is a persisted workspace. Milestone 5 added no screen or control — the table below describes the same UI as M4, with its stop and orphan behaviour hardened underneath. The post-M5 fix pass added exactly one control, the provider form's optional **Max context tokens** field, and changed what a session sends (see [Configuring Providers](#configuring-providers)). A later frontend-only pass added the session toolbar's **Copy** button and the terminal's right-click menu, keyboard copy/paste and scrolling ([Terminal keyboard and mouse](#terminal-keyboard-and-mouse)), and a second one fixed the `Open ▾` list, which was clipped out of view by the scrollable tab strip (see that row in the table).
+
+| Element | What it does today |
+| --- | --- |
+| Tab bar | One tab per open workspace, in the order they were opened. Click to activate (keyboard: Enter/Space); hover shows the project path. |
+| Status dot | Colour-coded per tab from the real session state machine: `idle`, `running`, `exited`, `failed`. A tab whose agent was never started reads `idle`. |
+| Tab close (`×`) | Closes the tab, activates the nearest surviving neighbour, and stops that tab's session. **The workspace stays configured** (spec section 9) and can be reopened from the Open menu. |
+| `+ New Workspace` | Opens the New Workspace dialog: name, project folder (with a native **Browse…** picker and a manual path fallback), Agent (fixed: Claude Code), Provider (from your profiles), Model (defaults to the provider's model, editable). Validation runs in the Rust core. |
+| `Open ▾` | Lists every configured workspace: open ones are marked and activate their tab, closed ones reopen. Reopening starts no agent. The list is rendered in a portal on `<body>` and positioned from the button's screen rectangle — anchored inside the tab strip it was clipped out of existence by the strip's horizontal scrolling (fixed in the post-M5 frontend pass; no test can see clipping like that, see [IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md)). |
+| Workspace panel | Header with the workspace name plus **Edit** (rename / change folder, provider or model), **Remove** (two-step confirm) and **Close tab**. Below it, the real configuration (project path, agent, provider, model) and the embedded xterm.js terminal with a Start / Stop / Restart / Copy / Clear toolbar and a lifecycle chip (`not started`, `starting`, `running`, `stopping`, `stopped`, `failed`). Keystrokes go to the session's PTY, the terminal's size is forwarded on resize, and PTY output is written straight into xterm. Text can be copied out with `Ctrl+C` (when something is selected), the right-click menu or the **Copy** button, and the terminal scrolls through 10 000 lines of scrollback with the wheel or `Shift+PageUp`/`PageDown` — see [Terminal keyboard and mouse](#terminal-keyboard-and-mouse). |
+| Panel switcher (`Workspace` / `Providers` / `Settings`) | Switches the content area. Selecting a tab returns to the Workspace panel. |
+| Remove workspace | Removes the workspace **from the application only**: your project folder and every file in it, the provider profile, and the stored API key are all left alone. Any session for it is stopped first. |
+| Providers panel | Real provider manager (M2): lists profiles with a keyring "key set / no key" badge, create/edit form (name, base URL, model, optional **Max context tokens**, password API-key field, extra env rows), inline connection test, and two-step delete. The stored key is presented to sessions as a bearer token, not an `X-Api-Key` header — see [Configuring Providers](#configuring-providers). |
+| Settings panel | Stub. Lists the planned settings surface. |
+| Empty state | Shown when no tab is open: create a workspace, or reopen one from the list of configured workspaces. |
+| Status bar | App version plus a one-line summary of the active tab (status, title, agent, provider/model), or `no active session`. |
+
+**Persistence and restart.** Workspaces live in SQLite and are restored on start, together with which tabs were open and which one was active (a UI preference). **No agent process is ever started automatically** — restored tabs come back with stopped sessions until you press Start (spec section 14).
+
+**Known limitations of this milestone:** the folder picker's native dialog has not been exercised in a running window (the manual path field is the fallback if it does not open), output produced while a tab is not visible is not replayed yet, so switching away and back loses a terminal's scrollback while the session itself keeps running, and on Windows the first half of a stop ends through the input-close/teardown path rather than a cooperative exit (measured in M5 — writing Ctrl-C to the PTY does not end a child there), so whether a real agent exits *cleanly* on a stop is unverified.
+
+In a plain browser (`npm run dev`, no Tauri) the workspace and terminal views stay mounted and explain themselves: the shell says the backend is unavailable instead of pretending to have workspaces, and the session toolbar prints "backend unavailable — run `npm run tauri dev`". Nothing is ever faked or simulated.
+
+**Coming next** (from the milestone plan, in order):
+
+- **M6** — Cross-platform verification and packaging: a verified run of the app on Windows (GUI), a packaged build, then macOS/Linux.
+- **Verification the post-M5 fix pass could not do here** — the bearer credential, the declared context window and the new provider-form field are unit-tested but have never been exercised in a GUI session, and whether a real gateway now accepts the session is unobservable without a live endpoint. The same holds for the terminal's copy/paste/scroll pass: jsdom proves the decisions and the wiring, not that WebView2 grants the clipboard or paints the styled scrollbar. All of it is folded into the M6 GUI pass.
+- **Still outstanding from M5's scope** — the stop-path mechanism question on Windows (Ctrl-C through ConPTY does nothing there), the output ring buffer + session re-attach that makes tab switching lossless, and letting the forced-stop path use the session's job object so a helper the agent detached is reached by Stop too (today the backstop is released with the PTY). All are listed in [IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md).
+
+## Configuring Providers
+
+> **Implemented (M2 metadata + keyring, M3 session injection, M4 workspace selection; credential style and the declared context window corrected in the post-M5 fix pass).** Creating, editing, deleting, and testing a profile works in the desktop app (`npm run tauri dev`), and starting a session applies that profile's environment to the agent's process only — the provider is chosen per workspace in the New Workspace dialog. The Rust side is compiled and unit-tested (`cargo test`); the desktop UI itself has not been exercised in a GUI session — see `IMPLEMENTATION_PROGRESS.md`.
+
+### Provider profile
+
+A provider profile is everything needed to talk to an AI API. Profiles are created, edited, deleted, tested, and selected in the **Providers** panel.
+
+| Field | Purpose |
+| --- | --- |
+| `id` | Stable internal identifier; also the keyring account name under which the profile's secret is stored. |
+| `name` | Display label, e.g. "Provider A". |
+| `base_url` | Base URL of the Anthropic-compatible endpoint. |
+| `api_key` | Secret credential. Stored in the OS keyring, never in SQLite. A session receives it as a **bearer token** (`ANTHROPIC_AUTH_TOKEN`), not as an `X-Api-Key` header — see [Credential model](#credential-model-bearer-token). |
+| `model` | Default model identifier for sessions using this profile. |
+| `max_context_tokens` | Optional. The model's real context window, e.g. `200000`. Exported to the session as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; empty means "declare nothing" and leaves Claude Code's own default. Minimum 1000. See [Model context window](#model-context-window). |
+| Additional environment variables | Optional key/value pairs for provider-specific needs. Applied last so they can intentionally override the defaults — including `ANTHROPIC_API_KEY`, for the gateway that genuinely wants an `X-Api-Key` header. |
+
+### Storage split
+
+| Data | Where it lives |
+| --- | --- |
+| Provider metadata (id, name, base URL, model, extra env vars), workspace metadata, UI preferences | SQLite via `rusqlite` (bundled) |
+| API keys and other credentials | OS-native secure storage through the `SecretStore` trait: Windows Credential Manager, macOS Keychain, Linux Secret Service |
+| Session process environment | Constructed in memory in the Rust core, per session, and passed only to that session's child process |
+
+### Credential model (bearer token)
+
+A provider's stored key is presented to a session in exactly **one** credential variable:
+
+| Variable | Set from | How Claude Code sends it |
+| --- | --- | --- |
+| `ANTHROPIC_AUTH_TOKEN` | The profile's secret, read from the OS keyring | `Authorization: Bearer <token>` — a custom value for the `Authorization` header, prefixed with `Bearer ` |
+
+The app does **not** set `ANTHROPIC_API_KEY` for a session. That variable is documented as an `X-Api-Key` header, and it was the M2 default — the decision was reversed (2026-09-15) because the gateways this application is pointed at answer **HTTP 401** to a request that presents both credential styles at once. The "Test provider" connection check now sends the bearer header only (plus the Anthropic API-version header), so the test preflights exactly what a session will present.
+
+Where the key lives at each step, and where it does not:
+
+- Written to the OS keyring by `SecretStore` under the profile `id` — never to SQLite, which holds only the profile's non-secret metadata.
+- Read back in the Rust core when a session starts, and injected into **that session's child process environment only**. The user's global environment is never modified (a unit test snapshots the whole process environment and asserts it is unchanged after sessions start).
+- Never returned to the React layer, never logged, and never included in an error message or the connectivity result.
+
+**Escape hatch for a gateway that wants `X-Api-Key`.** If your gateway really authenticates an API-key header rather than a bearer token, add `ANTHROPIC_API_KEY` as one of the provider's **Extra environment variables** and the app will set it too. Extras are applied *last*, after the defaults, so a deliberate extra wins on a duplicate name. One caveat worth knowing: extra environment values are persisted in SQLite as plaintext (that is how any extra value is stored), unlike the keyring-held secret they duplicate — so prefer the bearer default where your gateway accepts it.
+
+### Flow (steps 1-3 in M2, step 4 in M4, step 5 in M3)
+
+1. Open the Providers panel and create a profile: name, base URL, API key, model, optional **Max context tokens**, optional extra environment variables.
+2. Save. Non-secret fields are written to SQLite; the API key is handed to the Rust `SecretStore` and stored under the profile `id` in the OS keyring. The React layer does not retain the key — after saving, the field is empty and the profile shows a "key set" badge.
+3. Optionally run the profile's connection test (an authenticated `GET` against the base URL, falling back to `/v1/models`) to confirm the endpoint and key work. The credential goes out as `Authorization: Bearer <key>` and nothing else — the same style a session uses — and the result is shown inline; the key and response body are never echoed.
+4. Click **+ New Workspace** and pick a project folder (the native picker, or type the path), an agent (Claude Code), a provider, a model (defaults to the provider's model) and a name. The Rust core validates that the folder exists, that the folder is a directory, that the agent is implemented, and that the provider exists, then persists the workspace in SQLite. The workspace opens as a tab. *(`create_workspace` + `WorkspaceManager`, M4)*
+5. Press **Start**: the Rust core reads the workspace row and the profile metadata from SQLite, reads the secret from the keyring, assembles that session's environment, and spawns Claude Code with it through a PTY, in that workspace's project folder, with `CLAUDE_CONFIG_DIR` pointing at a per-session directory. *(`start_session` command + `sessions` manager, M3)*
+
+### Per-session environment
+
+Environment variables are built in Rust per session, primarily from the active provider profile: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (the keyring secret, as a bearer token), `ANTHROPIC_MODEL`, then `CLAUDE_CODE_MAX_CONTEXT_TOKENS` when the profile declares a window, then the profile's extra environment variables, and finally `CLAUDE_CONFIG_DIR` for that session's configuration directory.
+
+> **Credential and endpoint names verified 2026-09-15** against the official Claude Code environment-variable reference (`https://code.claude.com/docs/en/env-vars`): `ANTHROPIC_AUTH_TOKEN` is *"Custom value for the `Authorization` header (the value you set here will be prefixed with `Bearer `)"*, `ANTHROPIC_API_KEY` is *"API key sent as `X-Api-Key` header."*, `ANTHROPIC_BASE_URL` overrides the endpoint, and `ANTHROPIC_MODEL` selects the model. The adapter therefore sets `ANTHROPIC_AUTH_TOKEN` — never `ANTHROPIC_API_KEY`, which a gateway that wants `X-Api-Key` can add itself through the profile's extra environment variables (applied last, so it wins). `CLAUDE_CONFIG_DIR` is set **last** (M3), so a provider profile cannot redirect two sessions at the same configuration directory.
+
+The exact ordered variable-name set one session gets is pinned by a unit test (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, the provider's extras, `CLAUDE_CONFIG_DIR`), with `ANTHROPIC_API_KEY` asserted absent unless an extra deliberately adds it.
+
+Guarantees of this design (all three are asserted by unit tests in `sessions`):
+
+- The environment exists **only** for the session's child process. The user's global OS environment variables are never modified — a test snapshots the whole process environment and asserts it is byte-identical after two sessions start.
+- One session's environment never overwrites another's, even when several sessions use Claude Code at once.
+- The user never has to run shell commands to set this up; the application constructs the environment itself.
+
+### Model context window
+
+Claude Code ships with a model catalog. When a provider serves a model id that catalog does not describe — `glm-5.3` is the case that prompted this — Claude Code warns that the model *"isn't described by this version's model catalog"* and then sizes automatic compaction for an assumed **200k** window. If the real model has a different window, that assumption is wrong: too small throws context away earlier than needed, too large overruns the model. There is no bug to fix on either side; the window just has to be declared.
+
+Three ways to declare it, all supported by Claude Code:
+
+| Remedy | How | Trade-off |
+| --- | --- | --- |
+| **Provider's `maxContextTokens` field (what this app recommends)** | Fill in **Max context tokens** on the provider profile (e.g. `200000`). The session exports it as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. | Declares the truth once per provider, in one place, for every session. Minimum 1000; there is no upper bound, so a wrong value is your own to get right. |
+| `[1m]` suffix on the model name | Set the model to e.g. `glm-5.3[1m]` in the provider's **Model** field to declare a 1M-token window. | Only expresses 1M, and it changes the model id the gateway is asked for — some gateways reject an id they do not recognise. |
+| `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` | Add it as an extra environment variable on the provider. | Restores Claude Code's previous behaviour (no unknown-model window enforcement) rather than telling it the real window, so auto-compact sizing is then whatever it was before. |
+
+**Recommendation:** use the **Max context tokens** field. It is the only one of the three that states the model's actual window rather than changing the model id or switching the check off, and it is the one this app persists per provider. Leave the field empty and Claude Code's own fallback stays in charge, which is the honest default — a wrongly declared window silently mis-sizes auto-compact, whereas the fallback is at least the documented behaviour.
+
+> **Source note, stated plainly:** `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are documented on the official environment-variable page (quoted above). `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is **not** on that page — it is the variable Claude Code's own unknown-model warning names as the way to declare the window, so that name comes from the tool's message rather than from the published reference. The `[1m]` suffix and `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT` are the other two remedies Claude Code's own warning offers, from the same source. Verify all three against your installed Claude Code version before relying on them.
+
+### Manual equivalent today (workaround, outside the app)
+
+Outside the app, a power user can point Claude Code at a custom Anthropic-compatible provider by exporting the same variables in a shell before launching the CLI. This is a manual workaround in your terminal — it is **not** a feature of this app, and the app does not read or manage these variables.
+
+PowerShell (current session only):
+
+```powershell
+$env:ANTHROPIC_BASE_URL   = "https://provider-a.example.com"
+$env:ANTHROPIC_AUTH_TOKEN = "<your-api-key>"
+$env:ANTHROPIC_MODEL      = "model-a"
+claude
+```
+
+bash / zsh (current session only):
+
+```bash
+export ANTHROPIC_BASE_URL="https://provider-a.example.com"
+export ANTHROPIC_AUTH_TOKEN="<your-api-key>"
+export ANTHROPIC_MODEL="model-a"
+claude
+```
+
+Setting these in your shell profile would make them global — avoid that; scope them to the session that needs them. If Claude Code reports the model as unknown to its catalog, add `CLAUDE_CODE_MAX_CONTEXT_TOKENS` with the model's real window the same way (see [Model context window](#model-context-window)). Verify the variable names against the official Claude Code documentation for your installed version before relying on them.
+
+## Working with Claude Code Sessions
+
+> **Implemented in the Rust core (M3), drivable from the UI (M4), hardened and tested on both sides (M5); the credential a session presents and its declared context window were corrected in the post-M5 fix pass: create a workspace, open its tab, press Start.** Nothing below is simulated: the process is a real CLI in a real PTY, or there is no session at all. The one thing not yet observed end to end is a real Claude Code TUI inside the window - see the status section above.
+
+- **One PTY per session.** Claude Code runs as a real interactive CLI process attached to its own pseudo-terminal — never simulated or faked. The terminal view renders ANSI output, colours, scrolling, and resizes, and forwards keyboard input and interactive prompts. Unix PTY vs Windows ConPTY is handled by `portable-pty`; no terminal emulation is implemented by this app.
+- **Per-session environment isolation.** Each session's environment is assembled independently in Rust from its workspace's provider profile and its keyring credential, and applied to that session's child process only. Session A ≠ Session B ≠ Session C.
+- **Tab switching is non-destructive.** Activating another tab only changes which session is displayed. Background sessions keep running and keep their PTY, environment, process, working directory, and state intact. (Output produced while a tab is not visible is not replayed yet — a ring buffer plus re-attach is a later item; see `IMPLEMENTATION_PROGRESS.md`.)
+- **Independent everything.** Each session owns its project directory, agent process, PTY, environment, agent configuration (`CLAUDE_CONFIG_DIR` under the app data directory), and session state.
+- **Lifecycle states.** `Created → Starting → Running → Stopping → Stopped`, plus `Starting → Failed` for startup errors and `Running → Stopped/Failed` for unexpected termination. The UI reflects the real process state, not an assumed one.
+- **Bounded stops.** Stopping is graceful first (interrupt, then close the PTY input so a well-behaved CLI sees EOF), then forced after a short grace period. Every wait is bounded by a timeout, so a misbehaving agent can never hang the app.
+- **No orphaned processes on exit.** The Tauri run loop stops every session when the app exits (graceful, then forced). A hard kill of the app itself (Task Manager, `SIGKILL`) cannot run that code, so M5 added a per-session OS-level backstop (`src-tauri/src/process/guard.rs`): on Windows a Job Object created with kill-on-close, which makes the kernel terminate the agent's whole process tree when our handles die; on Unix the child's process group is signalled `SIGTERM` then `SIGKILL`. Two limits remain, both stated in [IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md): on Unix a `SIGKILL`ed application still leaves its agents (nothing runs to signal the group), and the Unix half of the guard has never been compiled or run — it is a documented, unverified path.
+- **Restart behaviour.** Workspaces and their configuration are restored on restart, along with which tabs were open. Previous agent processes are **not** started automatically — sessions come back `Stopped` until you start them.
+
+### Terminal keyboard and mouse
+
+The terminal is a real xterm.js instance, not a text box, so it has its own keyboard model. The one rule everything else follows from: **`Ctrl+C` keeps its terminal meaning and still sends `SIGINT` to the agent.** Copying is therefore a conditional rule, never a key swap.
+
+| Gesture | What happens |
+| --- | --- |
+| `Ctrl+C` **with a selection** | Copies the selection and is **not** forwarded — no `^C` reaches the agent. |
+| `Ctrl+C` **with no selection** | Unchanged: `SIGINT` is sent to the agent, exactly as before. |
+| `Ctrl+Shift+C`, `Ctrl+Insert` | Copy the selection. Recognised as copy gestures, so they are never sent to the agent; with nothing selected they copy nothing. |
+| `Ctrl+V` | Left to the webview: the native paste goes through xterm's own textarea and reaches the agent's input. |
+| `Ctrl+Shift+V` | Reads the clipboard ourselves and writes it to the agent's input (with `\r` line endings, and bracketed when the application asked for bracketed paste). If the clipboard cannot be read, **nothing happens** — nothing is pasted, nothing is cleared. |
+| Right-click | Opens the terminal's own menu — Copy (enabled only when something is selected), Copy all, Paste, Select all, Scroll to top, Scroll to bottom, Clear. The webview's default context menu is never shown. Closed by Escape, a click anywhere else, or a scroll. |
+| Mouse wheel | Scrolls the terminal's own scrollback (10 000 lines). Not intercepted: xterm's wheel handling is the only thing that knows when the agent owns the screen. |
+| `Shift+PageUp` / `Shift+PageDown` | Scroll one page without the keystroke reaching the agent. |
+| `Ctrl+Shift+Home` / `Ctrl+Shift+End` | Jump to the oldest line in the scrollback / back to the live bottom. |
+| Toolbar **Copy** | Copies the selection, or the whole terminal when nothing is selected — the tooltip says so, so the button is never a dead end. |
+| Text selection | xterm's own — drag with the mouse. `Shift`-drag forces a selection even when the running application has mouse reporting on. |
+
+Copying goes through two strategies, because the Tauri webview does not guarantee either: `navigator.clipboard.writeText` when it is available, and the legacy `document.execCommand("copy")` on a hidden textarea when it is missing or refuses (an unfocused window is the usual reason). A copy that both refuse is reported in the terminal as `[copy failed: the clipboard is not available]` instead of failing silently.
+
+**Alternate-screen caveat — this is by design, not a bug.** When the agent takes over the alternate screen buffer (any full-screen TUI: an editor, a pager, a full-screen form), the terminal has **no local scrollback**: the application owns the screen, and xterm reports wheel events to it as arrow keys. Scrolling there is the *application's* own scrolling, and `Shift+PageUp` / `Ctrl+Shift+Home` cannot reveal anything the application is not already showing. The terminal does not fake local scrollback in that mode.
+
+## Security Notes
+
+- **API keys never touch SQLite.** Provider metadata is persisted; the profile's secret is not. Plaintext credentials are never written to a database field by the app. (The one deliberate exception is an extra environment variable *you* add to a provider — e.g. `ANTHROPIC_API_KEY` for an `X-Api-Key` gateway — which is stored as plaintext like every extra value; the stored key reaches sessions as a bearer token without needing one.)
+- **API keys never reach logs or crash reports.** Not in application logs, process logs, UI debug output, or error messages. Keyring errors are stringified deliberately opaquely so platform error text cannot leak secret material.
+- **`SecretStore` abstraction.** All credential storage goes through one Rust trait with per-platform implementations — Windows Credential Manager, macOS Keychain, Linux Secret Service. Callers do not care which OS is underneath, and the machinery stays swappable and testable.
+- **The React layer does not hold secrets.** Secrets are read from the keyring in the Rust core and injected directly into the child process environment. They are sent to the frontend only where absolutely necessary, which the current design does not require.
+- **Secret handling stays in the native layer.** The frontend can reference a provider profile by `id` without ever seeing its key.
+
+## Project Layout
+
+```text
+.
+├── README.md                            # this file
+├── IMPLEMENTATION_PROGRESS.md           # status, milestones, decisions, blockers
+├── AI Coding Workspace - Implementation Prompt.md   # authoritative requirements spec
+├── package.json                         # scripts: dev, build, preview, test, tauri
+├── vite.config.ts                       # Vite dev server pinned to port 1420 for Tauri
+├── vitest.config.ts                     # frontend test harness (jsdom, src/test/setup.ts)
+├── index.html
+├── dist/                                # frontend build output (embedded by Tauri)
+├── src/                                 # React + TypeScript frontend (thin UI layer)
+│   ├── App.tsx                          # shell: tab bar + panel routing + status bar + workspace dialog
+│   ├── components/                      # TabBar, WorkspacePanel, WorkspaceDialog, WorkspaceSwitcher,
+│   │                                    #   SessionView, SessionTerminal, TerminalContextMenu,
+│   │                                    #   terminalKeys (the pure key decisions), ProvidersPanel,
+│   │                                    #   ProviderForm, BackendNotice, SettingsPanel, EmptyState, StatusBar
+│   ├── services/backend.ts              # `invoke` wrapper + "backend unavailable" handling
+│   ├── services/providers.ts            # typed provider command wrappers
+│   ├── services/workspaces.ts           # workspace commands + `pickProjectFolder` (native picker, with fallback)
+│   ├── services/sessions.ts             # session commands + `session-output:` / `session-state:` subscriptions
+│   ├── services/clipboard.ts            # terminal copy/paste: async Clipboard API + execCommand fallback
+│   ├── stores/useAppStore.ts            # zustand store (workspaces, tabs, active tab/panel, providers, sessions)
+│   ├── test/                            # frontend suite: setup, fixtures, mock-tauri bridge fake, mock-xterm fake,
+│   │                                    #   store/tabbar/dialog/providers/session-status/clipboard/terminal tests + smoke test
+│   ├── types/index.ts                   # Workspace, WorkspaceTab, SessionStatus, TerminalSession, ProviderProfile, ...
+│   ├── styles.css
+│   └── main.tsx
+└── src-tauri/                           # Rust core (all native capability)
+    ├── Cargo.toml                       # tokio, rusqlite (bundled), keyring v3, reqwest, uuid, portable-pty,
+    │                                    #   tauri-plugin-dialog, windows (Job Objects) / libc (Unix)
+    ├── capabilities/default.json        # core:default, opener:default, dialog:allow-open
+    ├── tauri.conf.json                  # identifier com.ryanheida.aiworkspace
+    └── src/
+        ├── lib.rs, main.rs              # Tauri setup: DB in app data dir, state, plugins, commands, exit cleanup
+        ├── agents/                      # AgentAdapter trait + ClaudeCodeAdapter (discovery, env, spawn description)
+        ├── secrets/                     # SecretStore trait + keyring store + in-memory store
+        ├── persistence/                 # SQLite Storage + user_version migrations + ui_preferences
+        ├── providers/                   # profiles, repository, connectivity test
+        ├── sessions/                    # session manager: per-session runtime, isolation, supervision
+        ├── workspaces/                  # WorkspaceManager (validation) over WorkspaceRepository + tab-layout preference
+        ├── process/                     # lifecycle state machine + spawn/exit types + guard.rs (orphan backstop)
+        ├── pty/                         # PTY per session over portable-pty (ConPTY / Unix pty)
+        └── commands/                    # Tauri command surface (providers, workspaces, sessions) + event bridge
+```
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `claude: command not found`, or the app reports Claude Code as missing | The CLI is not installed, or not on the `PATH` inherited by the app | Install Claude Code per the official docs, then restart the app so it picks up the updated `PATH`. Verify with `claude --version` in the same shell you launch the app from. |
+| `cargo: command not found` / `rustup: command not found` when running `npm run tauri dev`, `npm run tauri build`, or `cargo test` | Rust toolchain not installed, or not on the current `PATH` | Install via <https://rustup.rs>, confirm with `cargo --version`, restart the terminal. Also install the platform C++ build tools (MSVC on Windows), or the Rust link step — and the bundled SQLite build — will fail. |
+| `error: no such command`/`cargo` not found in a fresh shell on Windows | `cargo` lives in `%USERPROFILE%\.cargo\bin`, which is added to `PATH` by the installer but not to already-open shells | Prefix the command with `$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"` (PowerShell) or open a new terminal. |
+| `npm run tauri dev` fails with `failed to run 'cargo metadata' command … program not found` | The terminal was opened **before** `rustup` added `%USERPROFILE%\.cargo\bin` to the user `PATH`, so this shell's environment predates the Rust install. The install itself is fine — the shell is stale. | Open a **new** terminal (or restart the editor/terminal host) so it inherits the updated user `PATH`. As a one-off in the current session, prepend `$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"` before running the command. The same applies to any shell that predates the Rust toolchain install — including a Git Bash/`bash` window, where `$USERPROFILE` holds a Windows-style path (`C:\Users\…`) and does not work as a `PATH` entry, so use the POSIX form instead: `export PATH="/c/Users/<you>/.cargo/bin:$PATH"` (or `$(cygpath -u "$USERPROFILE")/.cargo/bin`). |
+| `cargo build` inside `src-tauri/` fails complaining that the frontend/dist directory does not exist | Tauri's `generate_context!` embeds `frontendDist` (`../dist`), which only exists after a frontend build | Run `npm run build` once, or use `npm run tauri dev` / `npm run tauri build`, which build the frontend first. |
+| The app launches but the window is blank or will not open on Windows | WebView2 Runtime missing | Install the Microsoft Edge WebView2 Evergreen Runtime, or use a Tauri installer that bundles the bootstrapper. |
+| Pressing **Start** in a tab reports `workspace not found: …` | The tab's workspace was deleted (from another window, or by an older build) while the tab stayed open | Reload the window, or remove and recreate the workspace. Since M4 every tab is a persisted workspace, so this should not happen in normal use. |
+| **Bundle…** / the folder picker does nothing, or the dialog says the picker is unavailable | The native picker needs the Tauri runtime and the `dialog:allow-open` capability, and it has not been verified in a GUI session | Type the project folder path into the field instead — it is always editable, and the Rust core validates the path either way. See `IMPLEMENTATION_PROGRESS.md` (Known Issues). |
+| Creating a workspace reports `the project folder does not exist: …` / `the project path is not a folder: …` | The project folder must already exist and be a directory; the app never creates it, and it requires an absolute path | Fix the path (use **Browse…**, or paste the absolute path) and save again. |
+| Creating a workspace reports `provider not found: …` | The selected provider profile was deleted in another window | Reopen the dialog and pick a provider from the current list. |
+| On Windows a started session shows no output until you press a key | `ConPTY` opens by asking the terminal for the cursor position (`ESC[6n`) and holds output until it is answered; `xterm.js` implements that reply, but this path has not been verified in a GUI session | Verify in `npm run tauri dev`; if it reproduces, the terminal view needs to answer device-status reports explicitly. See `IMPLEMENTATION_PROGRESS.md` (Known Issues). |
+| `tauri dev` fails because port 1420 is already in use | The Vite dev server is configured with `strictPort: true` on 1420 | Stop whatever is listening on 1420 (often a previous dev server), then retry. |
+| `Ctrl+C` copies text instead of interrupting the agent (or the reverse) | Both are correct, and the selection decides which: with text selected `Ctrl+C` copies (and no `^C` is sent), with nothing selected it sends `SIGINT` | Click once in the terminal to drop the selection when you meant to interrupt; `Ctrl+Shift+C` always copies and is never sent to the agent. See [Terminal keyboard and mouse](#terminal-keyboard-and-mouse). |
+| A copy reports `[copy failed: the clipboard is not available]` | The webview refused both clipboard paths — usually because the window is not focused, or because it has not been granted clipboard access | Click into the app (so the window has focus) and copy again; the right-click menu's **Copy all** and the toolbar **Copy** use the same two paths. |
+| Scrolling in a full-screen agent screen (an editor or a pager) does not move the terminal's scrollback | That agent has taken over the alternate screen buffer, where the terminal has no local scrollback by design and reports wheel events to the application as arrow keys | Scroll the application's own content instead (its own keys or the wheel). This is the documented behaviour, not a defect — see [Terminal keyboard and mouse](#terminal-keyboard-and-mouse). |
+| `npm install` or the frontend build fails on an old Node version | Vite 8 needs Node ≥20.19 or ≥22.12 | Upgrade Node to 22.x LTS. |
+| Switching tabs and coming back shows an empty terminal while the session is still running | Output produced while a tab is not visible is not replayed, and the xterm instance is disposed on unmount (an M3 known issue; the session itself keeps running) | Expected for now. The fix (an output ring buffer plus session re-attach) is still outstanding — it did **not** land in M5. The session's status chip stays correct. |
+
+## Roadmap
+
+Milestone-by-milestone status, architecture decisions, known issues, blockers, and test results live in **[IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md)** — that file is updated as work proceeds and is the single source of truth for what is actually done. This README describes the intended user-facing product and is revised as milestones land.

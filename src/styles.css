@@ -1,0 +1,1073 @@
+:root {
+  color-scheme: dark;
+
+  --bg: #1a1b26;
+  --bg-panel: #1f2335;
+  --bg-elevated: #24283b;
+  --bg-input: #16161e;
+  --border: #2f334d;
+  --border-strong: #3b4261;
+  --text: #c0caf5;
+  --text-dim: #7982a9;
+  --text-faint: #565f89;
+  --accent: #7aa2f7;
+  --accent-dim: #3d59a1;
+  --green: #9ece6a;
+  --red: #f7768e;
+  --gray: #565f89;
+  --yellow: #e0af68;
+
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono",
+    "DejaVu Sans Mono", monospace;
+
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background-color: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background-color: var(--bg);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.muted {
+  color: var(--text-faint);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------- Shell ---------- */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background-color: var(--bg);
+  overflow: auto;
+}
+
+/* ---------- Tab bar ---------- */
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px 8px;
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.tabbar-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 5px 6px 5px 10px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  border-color: var(--border-strong);
+}
+
+.tab-active {
+  background-color: var(--bg-input);
+  border-color: var(--accent-dim);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  background-color: var(--border);
+  color: var(--text);
+}
+
+.status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--gray);
+}
+
+.dot-idle,
+.dot-exited {
+  background-color: var(--gray);
+}
+
+.dot-running {
+  background-color: var(--green);
+}
+
+.dot-failed {
+  background-color: var(--red);
+}
+
+.btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--accent-dim);
+  background-color: var(--border);
+}
+
+.new-workspace {
+  flex: none;
+  color: var(--text-dim);
+}
+
+/* "New Workspace" and "Open ▾" sit together as one group, and nothing more:
+   the reopen list is *not* anchored here. It is portaled to `<body>` and placed
+   from this button's viewport rect (WorkspaceSwitcher), because the tab strip
+   scrolls and `.tabbar-tabs`' `overflow-x: auto` also clips vertically - any
+   popover positioned inside this subtree is invisible outside the strip's box. */
+.tabbar-new {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.open-workspace {
+  padding: 4px 8px;
+}
+
+.panel-switcher {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-btn {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+.panel-btn:hover {
+  background-color: var(--bg-elevated);
+}
+
+.panel-btn-active {
+  background-color: var(--bg-elevated);
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+/* ---------- Workspace panel ---------- */
+
+.workspace-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.workspace-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 10px 12px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.meta-grid dt {
+  color: var(--text-faint);
+}
+
+.meta-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.viewport {
+  flex: 1;
+  min-height: 160px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background-color: var(--bg-input);
+}
+
+.empty-viewport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Session view (Milestone 3) ---------- */
+
+.session-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Fixed toolbar row: it must not shrink when the viewport is squeezed. */
+.session-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.session-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-chip {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background-color: var(--bg-elevated);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.chip-created,
+.chip-stopped {
+  border-color: var(--border-strong);
+  color: var(--text-faint);
+}
+
+.chip-starting,
+.chip-stopping {
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+.chip-running {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.chip-failed {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.session-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* The terminal fills the bordered panel; the notice (when present) sits above
+   it rather than replacing it, so the terminal keeps a measurable size and the
+   layout stays inspectable without a backend. */
+.session-viewport {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.session-viewport-notice {
+  flex: none;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-viewport-notice .notice p {
+  max-width: 90ch;
+}
+
+.session-terminal {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Matches the terminal theme background so the panel never flashes black. */
+  background-color: #1a1b26;
+}
+
+/* The xterm mount node. It is its own element so the right-click menu can be a
+   sibling of the terminal: xterm's `open()` owns everything inside this one.
+   `height: 100%` as well as `flex: 1` so the inner `.xterm { height: 100% }`
+   resolves against a definite box - FitAddon measures this element's client
+   size, and a zero-height measurement would silently produce a 0-row fit. */
+.session-terminal-mount {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+}
+
+/* FitAddon measures the padding of the inner `.xterm` element and subtracts
+   it, so the inset belongs there and not on the container. */
+.session-terminal .xterm {
+  padding: 6px 8px;
+  height: 100%;
+}
+
+.session-terminal .xterm-viewport {
+  border-radius: 0 0 5px 5px;
+  scrollbar-color: var(--border) var(--bg);
+  scrollbar-width: thin;
+}
+
+/*
+ * Scrollbar.
+ *
+ * xterm 6 draws its own overlay scrollbar inside `.xterm-scrollable-element`,
+ * coloured from `ITheme.scrollbarSlider*` (which `SessionTerminal.tsx` sets to
+ * the same muted palette used below), so the rules that matter most are the two
+ * that keep it *visible*: xterm configures its scrollbar as `auto`, i.e. it
+ * fades out again as soon as the user stops scrolling - which is what made the
+ * panel look like it had no scrollbar at all. Overriding the visibility class
+ * here keeps the slider on screen; the colours stay xterm's business.
+ *
+ * The `::-webkit-scrollbar` rules are for the viewport's own scrollbar, which
+ * is what a webview shows when the platform renders a native one (WebView2 does
+ * not paint a custom-scrollbar panel's track itself). Track = the terminal
+ * background, thumb = the app's muted border, hover/active = the stronger
+ * border and the dim text colour. Nothing here hides the bar.
+ */
+.session-terminal .xterm-scrollable-element > .scrollbar {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.session-terminal .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.session-terminal .xterm-viewport::-webkit-scrollbar-track {
+  background-color: var(--bg);
+}
+
+.session-terminal .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 5px;
+}
+
+.session-terminal .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: var(--border-strong);
+}
+
+.session-terminal .xterm-viewport::-webkit-scrollbar-corner {
+  background-color: var(--bg);
+}
+
+/* ---------- Terminal context menu ---------- */
+
+/* Reuses the `.menu` / `.menu-item` styling of the reopen menu; only the
+   positioning differs, because this one is opened at the pointer. The selector
+   is deliberately two classes: `.menu` is defined *later* in this file, so an
+   equal-specificity `.context-menu` rule would lose the cascade and leave the
+   menu absolutely positioned inside the panel instead of at the pointer. */
+.menu.context-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  min-width: 200px;
+  max-width: 260px;
+}
+
+.context-menu .menu-list {
+  gap: 1px;
+}
+
+.context-menu .menu-item {
+  gap: 24px;
+}
+
+.context-menu .menu-item:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.context-menu .menu-item:disabled:hover {
+  background-color: transparent;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background-color: var(--border);
+}
+
+/* ---------- Stubs and empty state ---------- */
+
+.stub-panel {
+  max-width: 640px;
+}
+
+.stub-panel h2,
+.empty-state h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.stub-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: var(--text-dim);
+}
+
+.stub-list li {
+  margin-bottom: 4px;
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  overflow: auto;
+}
+
+.empty-state-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.empty-state-list {
+  width: 100%;
+  max-width: 460px;
+  margin-top: 12px;
+  text-align: left;
+}
+
+.empty-state-list h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* ---------- Configured workspace list (M4) ---------- */
+
+.workspace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workspace-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.workspace-list-item:hover {
+  border-color: var(--accent-dim);
+  background-color: var(--bg-elevated);
+}
+
+.workspace-list-name {
+  font-weight: 600;
+}
+
+.workspace-list-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Reopen menu (M4) ---------- */
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 240px;
+  max-width: 380px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+/* The reopen list keeps `.menu`'s looks, but where it goes is decided by
+   WorkspaceSwitcher: it is portaled to `<body>` and given `position: fixed`
+   plus its viewport coordinates *inline*, so `.menu`'s own absolute positioning
+   and `top: calc(100% + 4px)` never apply to this variant. Only the stacking
+   order is left here, since it is the same for every instance. */
+.menu.workspace-switcher {
+  z-index: 30;
+}
+
+.menu-note {
+  margin: 6px 8px;
+  font-size: 12px;
+}
+
+.menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 5px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.menu-item:hover {
+  background-color: var(--border);
+}
+
+.menu-item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-item-hint {
+  flex: none;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- Modal dialog (New/Edit workspace, M4) ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 16px 16px;
+  background-color: rgb(0 0 0 / 55%);
+  overflow: auto;
+}
+
+.modal {
+  width: 100%;
+  max-width: 620px;
+  padding: 16px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgb(0 0 0 / 55%);
+}
+
+.modal h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal .form-grid {
+  grid-template-columns: 1fr;
+}
+
+.modal select {
+  width: 100%;
+  padding: 5px 8px;
+  background-color: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.modal select:disabled {
+  color: var(--text-faint);
+}
+
+/* ---------- Status bar ---------- */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 10px;
+  background-color: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+/* ---------- Providers panel ---------- */
+
+.providers-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 960px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.provider-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provider-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-name {
+  font-weight: 600;
+}
+
+.provider-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0;
+}
+
+.provider-meta dt {
+  color: var(--text-faint);
+}
+
+.provider-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.provider-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+}
+
+.provider-empty p {
+  margin: 0;
+}
+
+.badge {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background-color: var(--bg-elevated);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.badge-ok {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.badge-warn {
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+.test-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.test-result-ok {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.test-result-fail {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.test-result .btn {
+  margin-left: auto;
+}
+
+.alert {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+}
+
+.alert-error {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.alert-warn {
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+.notice {
+  padding: 12px;
+  background-color: var(--bg-panel);
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+}
+
+.notice strong {
+  color: var(--yellow);
+}
+
+.notice p {
+  margin: 6px 0 0;
+}
+
+/* ---------- Provider form ---------- */
+
+.provider-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.provider-form h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.provider-form input {
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background-color: var(--bg-input);
+  color: var(--text);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.field-label {
+  color: var(--text-dim);
+}
+
+.field-row {
+  display: flex;
+  gap: 6px;
+}
+
+.field-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+}
+
+.field-hint code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.env-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.env-fieldset legend {
+  padding: 0 4px;
+  color: var(--text-dim);
+}
+
+.env-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1.4fr) auto;
+  gap: 6px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn-primary {
+  border-color: var(--accent-dim);
+  background-color: var(--accent-dim);
+}
+
+.btn-primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  color: var(--bg-input);
+}
+
+.btn-danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: var(--red);
+  color: var(--bg-input);
+}
+
+.btn-quiet {
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--text-dim);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  background-color: var(--border);
+  color: var(--text);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Scrollbars ---------- */
+
+* {
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border-radius: 5px;
+}
