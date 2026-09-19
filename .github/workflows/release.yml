@@ -12,11 +12,19 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Release Please
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: simple
-          initial-version: 0.1.0
+
+  build-windows:
+    needs: release
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      tag: ${{ needs.release.outputs.tag_name }}
