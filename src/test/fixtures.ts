@@ -12,10 +12,12 @@
 
 import userEvent from "@testing-library/user-event";
 import { AGENT_ID, useAppStore } from "../stores/useAppStore";
+import type { Preference } from "../settings/preferences";
 import type {
   ProviderProfile,
   SecretStatus,
   TerminalSession,
+  UiPreferences,
   Workspace,
   WorkspaceTab,
 } from "../types";
@@ -117,4 +119,34 @@ export function tabFor(workspaceId: string): WorkspaceTab {
     throw new Error(`no open tab for workspace "${workspaceId}"`);
   }
   return tab;
+}
+
+/**
+ * Seed the preference map the way a successful `list_ui_preferences` would.
+ *
+ * The values are the **stored strings**, not typed values, which is what makes
+ * this useful for the fallback tests: seeding `{ "terminal.fontSize": "huge" }`
+ * is the only way to prove a malformed value reads as the default rather than
+ * breaking the panel. For the ordinary case, prefer `seedPreference`, which
+ * serializes through the same module the app writes with.
+ */
+export function seedPreferences(stored: UiPreferences = {}): void {
+  useAppStore.setState({
+    preferences: { ...stored },
+    preferencesLoaded: true,
+    preferencesLoading: false,
+  });
+}
+
+/** Seed one preference from a typed value, serialized as the app would. */
+export function seedPreference<T>(preference: Preference<T>, value: T): void {
+  const current = useAppStore.getState().preferences;
+  useAppStore.setState({
+    preferences: {
+      ...current,
+      [preference.key]: preference.serialize(value),
+    },
+    preferencesLoaded: true,
+    preferencesLoading: false,
+  });
 }

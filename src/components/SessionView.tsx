@@ -22,6 +22,7 @@ import SessionTerminal, {
   type SessionTerminalHandle,
 } from "./SessionTerminal";
 import { useAppStore } from "../stores/useAppStore";
+import { preferences } from "../settings/preferences";
 import { isBackendAvailable } from "../services/backend";
 import { onSessionOutput, onSessionState } from "../services/sessions";
 import type { TerminalSessionStatus, WorkspaceTab } from "../types";
@@ -55,6 +56,24 @@ export default function SessionView({ tab }: Props) {
   const writeSessionInput = useAppStore((s) => s.writeSessionInput);
   const resizeSession = useAppStore((s) => s.resizeSession);
   const applySessionState = useAppStore((s) => s.applySessionState);
+
+  // Appearance, from the Settings tab (spec section 12). Read through the
+  // preference module so this component never parses a stored string, and each
+  // selector returns a primitive so a preference change re-renders exactly the
+  // terminals and nothing else.
+  const theme = useAppStore((s) => s.resolvedTheme);
+  const fontSize = useAppStore((s) =>
+    preferences.terminalFontSize.get(s.preferences),
+  );
+  const scrollback = useAppStore((s) =>
+    preferences.terminalScrollback.get(s.preferences),
+  );
+  const cursorBlink = useAppStore((s) =>
+    preferences.terminalCursorBlink.get(s.preferences),
+  );
+  const copyOnSelect = useAppStore((s) =>
+    preferences.terminalCopyOnSelect.get(s.preferences),
+  );
 
   const terminalRef = useRef<SessionTerminalHandle | null>(null);
 
@@ -294,6 +313,11 @@ export default function SessionView({ tab }: Props) {
           onReady={handleReady}
           onData={handleData}
           onResize={handleResize}
+          theme={theme}
+          fontSize={fontSize}
+          scrollback={scrollback}
+          cursorBlink={cursorBlink}
+          copyOnSelect={copyOnSelect}
         />
       </div>
     </section>

@@ -16,7 +16,8 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { pickProjectFolder, type FolderPickerOutcome } from "../services/workspaces";
-import { AGENT_ID, AGENT_LABEL } from "../stores/useAppStore";
+import { AGENT_ID, AGENT_LABEL, useAppStore } from "../stores/useAppStore";
+import { preferences } from "../settings/preferences";
 import type { ProviderProfile, Workspace, WorkspaceInput } from "../types";
 
 interface Props {
@@ -35,16 +36,33 @@ interface Props {
   onOpenProviders: () => void;
 }
 
-/** Pick the provider profile to preselect in the form. */
+/**
+ * Pick the provider profile to preselect in the form.
+ *
+ * Precedence: the workspace's own provider when editing, then the configured
+ * default from Settings, then the first configured profile - which is what this
+ * dialog did before the setting existed. A default that no longer resolves (its
+ * profile was deleted) falls through rather than leaving the form on a provider
+ * that is not in the list.
+ *
+ * Secrets are not involved: this is a profile **id**.
+ */
 function defaultProvider(
   workspace: Workspace | undefined,
   providers: ProviderProfile[],
+  configuredDefaultId: string,
 ): string {
   if (
     workspace &&
     providers.some((provider) => provider.id === workspace.providerId)
   ) {
     return workspace.providerId;
+  }
+  if (
+    configuredDefaultId !== "" &&
+    providers.some((provider) => provider.id === configuredDefaultId)
+  ) {
+    return configuredDefaultId;
   }
   return providers[0]?.id ?? "";
 }
@@ -59,18 +77,24 @@ export default function WorkspaceDialog({
   onOpenProviders,
 }: Props) {
   const isEditing = workspace !== undefined;
+  // Read once through the preference module, so the dialog does not know how
+  // the default is stored - only what it resolves to.
+  const configuredDefaultId = useAppStore((state) =>
+    preferences.workspacesDefaultProvider.get(state.preferences),
+  );
   const [name, setName] = useState(workspace?.name ?? "");
   const [projectPath, setProjectPath] = useState(workspace?.projectPath ?? "");
   const [providerId, setProviderId] = useState(() =>
-    defaultProvider(workspace, providers),
+    defaultProvider(workspace, providers, configuredDefaultId),
   );
   const [model, setModel] = useState(
     () =>
       // An explicit per-workspace override wins; otherwise the form starts on
       // the provider's own model, which is what the backend would use anyway.
       workspace?.model ??
-      providers.find((p) => p.id === defaultProvider(workspace, providers))
-        ?.model ??
+      providers.find(
+        (p) => p.id === defaultProvider(workspace, providers, configuredDefaultId),
+      )?.model ??
       "",
   );
   const [pickerNote, setPickerNote] = useState<string | null>(null);

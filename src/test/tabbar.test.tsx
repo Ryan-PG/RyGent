@@ -18,9 +18,11 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import TabBar from "../components/TabBar";
 import WorkspaceSwitcher from "../components/WorkspaceSwitcher";
 import { useAppStore } from "../stores/useAppStore";
+import { preferences } from "../settings/preferences";
 import {
   makeWorkspace,
   resetAppStore,
+  seedPreference,
   seedSession,
   seedWorkspaces,
   setupUser,
@@ -175,6 +177,10 @@ describe("TabBar", () => {
     stubCommands({ stop_session: () => null });
     seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
     seedSession("ws-1", { id: "session-1", status: "running" });
+    // The default asks before closing a running session (Settings > Sessions);
+    // this test is about what closing a tab does, so it closes without the
+    // prompt. The prompt itself is covered in `store.test.ts`.
+    seedPreference(preferences.sessionsConfirmCloseRunning, false);
 
     render(<TabBar />);
     await user.click(screen.getByRole("button", { name: "Close Alpha" }));
@@ -191,6 +197,26 @@ describe("TabBar", () => {
     });
     expect(screen.queryByRole("tab", { name: /Alpha/ })).not.toBeInTheDocument();
     expect(tab("Beta")).toBeInTheDocument();
+  });
+
+  it("pressing the close button on a running session asks first, and keeps the tab until it is answered", async () => {
+    const user = setupUser();
+    stubCommands({ stop_session: () => null });
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "running" });
+
+    render(<TabBar />);
+    await user.click(screen.getByRole("button", { name: "Close Alpha" }));
+
+    // Parked, not closed: the session is still running and the tab is still open.
+    expect(useAppStore.getState().confirmCloseTabId).toBe("ws-1");
+    expect(useAppStore.getState().tabs.map((tab) => tab.id)).toEqual([
+      "ws-1",
+      "ws-2",
+    ]);
+    expect(invokeMock).not.toHaveBeenCalledWith("stop_session", {
+      sessionId: "session-1",
+    });
   });
 
   it("shows each tab's session status on its indicator", () => {

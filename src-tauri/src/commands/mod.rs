@@ -16,6 +16,7 @@
 
 pub mod providers;
 pub mod sessions;
+pub mod settings;
 pub mod workspaces;
 
 use std::fmt;

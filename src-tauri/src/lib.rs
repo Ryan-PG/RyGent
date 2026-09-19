@@ -33,6 +33,7 @@ use tauri::{Manager, RunEvent};
 
 use crate::commands::providers as provider_commands;
 use crate::commands::sessions as session_commands;
+use crate::commands::settings as settings_commands;
 use crate::commands::workspaces as workspace_commands;
 use crate::commands::AppState;
 use crate::persistence::{Storage, DATABASE_FILE_NAME};
@@ -120,6 +121,13 @@ pub fn run() {
                 Box::new(KeyringStore::new()),
             )));
 
+            // Paths the Settings tab reports (spec section 12). Resolved here
+            // so the About / Storage section never re-derives them.
+            app.manage(settings_commands::AppPaths {
+                data_directory: data_directory.clone(),
+                database_path: database_path.clone(),
+            });
+
             // Session runtime (Milestone 3). Per-session configuration lives
             // below the app data directory (spec section 8); the listener
             // bridges output and state changes onto Tauri events (spec sections
@@ -150,6 +158,10 @@ pub fn run() {
             session_commands::write_session,
             session_commands::resize_session,
             session_commands::list_sessions,
+            settings_commands::list_ui_preferences,
+            settings_commands::set_ui_preference,
+            settings_commands::app_info,
+            settings_commands::open_data_directory,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the tauri application");

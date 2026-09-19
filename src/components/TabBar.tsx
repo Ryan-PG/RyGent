@@ -24,7 +24,9 @@ export default function TabBar() {
   const tabs = useAppStore((s) => s.tabs);
   const sessions = useAppStore((s) => s.sessions);
   const activeTabId = useAppStore((s) => s.activeTabId);
-  const closeTab = useAppStore((s) => s.closeTab);
+  // `requestCloseTab` rather than `closeTab`: closing a tab with a live session
+  // asks first, when "confirm before closing a running session" is on.
+  const requestCloseTab = useAppStore((s) => s.requestCloseTab);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const activePanel = useAppStore((s) => s.activePanel);
   const setActivePanel = useAppStore((s) => s.setActivePanel);
@@ -68,7 +70,7 @@ export default function TabBar() {
                 title="Close tab (the workspace stays configured)"
                 onClick={(e) => {
                   e.stopPropagation();
-                  closeTab(tab.id);
+                  requestCloseTab(tab.id);
                 }}
               >
                 ×

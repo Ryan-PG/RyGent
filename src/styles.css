@@ -1,10 +1,62 @@
+/*
+ * Theme tokens (spec section 12, "Appearance").
+ *
+ * The *light* palette is the plain `:root` and the dark palette is an override
+ * on `:root[data-theme="dark"]`, which `settings/theme.ts` sets on <html>. That
+ * order matters: the app is always painted from these custom properties, so a
+ * theme change is one attribute write and nothing else - no component knows
+ * which theme is active.
+ *
+ * Both palettes are Tokyo Night (Day and Storm), so the two themes are the same
+ * design in two keys rather than two designs. `--terminal-bg` is separate from
+ * `--bg` because the terminal panel must match the xterm canvas exactly (see
+ * `SessionTerminal.tsx`), and the two are not quite the same surface in light.
+ *
+ * Adding a token here means adding it to *both* blocks - a token defined only
+ * under `data-theme="dark"` silently falls back to the light value.
+ */
 :root {
+  color-scheme: light;
+
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono",
+    "DejaVu Sans Mono", monospace;
+
+  /* Light: Tokyo Night "Day". */
+  --bg: #e1e2e7;
+  --bg-panel: #d0d5e3;
+  --bg-elevated: #c4c8da;
+  --bg-input: #f5f6fa;
+  --terminal-bg: #e1e2e7;
+  --border: #c3c6d8;
+  --border-strong: #a8adc4;
+  --text: #3760bf;
+  --text-dim: #5c6a9c;
+  --text-faint: #848cb5;
+  --accent: #2e7de9;
+  --accent-dim: #91a8db;
+  --green: #587539;
+  --red: #f52a65;
+  --gray: #848cb5;
+  --yellow: #8c6c3e;
+
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background-color: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark: Tokyo Night "Storm" - the palette the app shipped with. */
+:root[data-theme="dark"] {
   color-scheme: dark;
 
   --bg: #1a1b26;
   --bg-panel: #1f2335;
   --bg-elevated: #24283b;
   --bg-input: #16161e;
+  --terminal-bg: #1a1b26;
   --border: #2f334d;
   --border-strong: #3b4261;
   --text: #c0caf5;
@@ -16,17 +68,6 @@
   --red: #f7768e;
   --gray: #565f89;
   --yellow: #e0af68;
-
-  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
-  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono",
-    "DejaVu Sans Mono", monospace;
-
-  font-family: var(--font-ui);
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--text);
-  background-color: var(--bg);
-  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -400,8 +441,11 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* Matches the terminal theme background so the panel never flashes black. */
-  background-color: #1a1b26;
+  /* Matches the xterm theme background so the panel never flashes black (or
+     white) between a layout pass and xterm's own repaint. Both sides read their
+     value from a theme token - this one from `--terminal-bg`, the canvas from
+     the `ITheme` built in `SessionTerminal.tsx`. */
+  background-color: var(--terminal-bg);
 }
 
 /* The xterm mount node. It is its own element so the right-click menu can be a
@@ -511,27 +555,12 @@ button {
   background-color: var(--border);
 }
 
-/* ---------- Stubs and empty state ---------- */
+/* ---------- Empty state ---------- */
 
-.stub-panel {
-  max-width: 640px;
-}
-
-.stub-panel h2,
 .empty-state h2 {
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 600;
-}
-
-.stub-list {
-  margin: 12px 0 0;
-  padding-left: 18px;
-  color: var(--text-dim);
-}
-
-.stub-list li {
-  margin-bottom: 4px;
 }
 
 .empty-state {
@@ -1053,6 +1082,138 @@ button {
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ---------- Settings panel ---------- */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 760px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.settings-section > h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* One setting: description on the left, control on the right. The control
+   column is `max-content` so a row of checkboxes still lines up with a row
+   holding a number input and a Reset button. */
+.settings-row {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-section > .settings-row:first-of-type {
+  border-top: none;
+}
+
+.settings-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-row-label span:first-child {
+  color: var(--text);
+}
+
+.settings-row-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-row-control input[type="number"] {
+  width: 92px;
+  padding: 4px 8px;
+  background-color: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font: inherit;
+}
+
+.settings-row-control input[type="number"]:disabled,
+.settings-row-control select:disabled {
+  opacity: 0.5;
+}
+
+.settings-row-control select {
+  min-width: 180px;
+  max-width: 260px;
+  padding: 4px 8px;
+  background-color: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font: inherit;
+}
+
+/* Checkboxes and radios sit on the same baseline as the text beside them. */
+.settings-row-control input[type="checkbox"],
+.settings-row-control input[type="radio"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* The three theme choices, as a labelled radio group. */
+.theme-choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+  cursor: pointer;
+}
+
+.theme-choice:has(input:checked) {
+  border-color: var(--accent-dim);
+  background-color: var(--bg-input);
+}
+
+.settings-about {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.settings-about dt {
+  color: var(--text-faint);
+}
+
+.settings-about dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-about-actions {
+  margin-top: 10px;
 }
 
 /* ---------- Scrollbars ---------- */

@@ -25,7 +25,9 @@ export default function WorkspacePanel({ tab }: Props) {
   const providers = useAppStore((state) => state.providers);
   const openWorkspaceDialog = useAppStore((state) => state.openWorkspaceDialog);
   const deleteWorkspace = useAppStore((state) => state.deleteWorkspace);
-  const closeTab = useAppStore((state) => state.closeTab);
+  // Closing a tab stops its session, so it goes through the confirmation gate
+  // when "confirm before closing a running session" is on.
+  const requestCloseTab = useAppStore((state) => state.requestCloseTab);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const name = workspace?.name ?? tab.title;
@@ -83,7 +85,7 @@ export default function WorkspacePanel({ tab }: Props) {
             type="button"
             className="btn btn-quiet"
             title="Close the tab. The workspace stays configured and can be reopened."
-            onClick={() => closeTab(tab.id)}
+            onClick={() => requestCloseTab(tab.id)}
           >
             Close tab
           </button>
