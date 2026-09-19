@@ -55,7 +55,10 @@ export interface WorkspaceTab {
   workspaceId: string;
   title: string;
   projectPath: string;
-  /** Agent display label, e.g. `Claude Code`. */
+  /**
+   * Agent display label, e.g. `Claude Code`, resolved from the loaded agent list
+   * (see `agentLabel` in the store) so the UI says which CLI a tab runs.
+   */
   agent: string;
   /** Provider profile id; the display name is resolved from the providers list. */
   provider: string;
@@ -177,6 +180,32 @@ export type SecretStatus = boolean | null;
 export type BackendStatus = "connecting" | "ready" | "unavailable" | "error";
 
 /**
+ * One agent this build implements, as `list_agents` reports it.
+ *
+ * Mirrors `crate::agents::AgentDescriptor` (which `app_info.agents` reuses), so
+ * the two agent listings can never describe an agent differently. It carries no
+ * provider or credential information: this is machine state (is the CLI on
+ * `PATH`, where is it), never session state (spec section 17).
+ */
+export interface AgentInfo {
+  /** Stable id persisted in `workspaces.agentId`, e.g. `claude-code`. */
+  id: string;
+  /** Display label, e.g. `Claude Code`. */
+  name: string;
+  /**
+   * Whether the CLI was found on this machine.
+   *
+   * `null` means "not determined", and only ever comes from the frontend's own
+   * fallback list - the backend always answers with `true` or `false` (the same
+   * distinction `SecretStatus` draws). A surface must therefore warn about a
+   * missing CLI only on an explicit `false`.
+   */
+  installed: boolean | null;
+  /** Resolved executable path; `null` when the CLI was not found. */
+  executablePath: string | null;
+}
+
+/**
  * Which palette the user picked (spec section 12, "Appearance").
  *
  * `system` is a real third choice, not "unset": it follows the OS through
@@ -218,8 +247,14 @@ export interface AppInfo {
   databasePath: string;
   /** Database file size in bytes; `null` when the file does not exist yet. */
   databaseSizeBytes: number | null;
-  /** Resolved Claude Code executable; `null` when it is not installed. */
-  claudeCodePath: string | null;
+  /**
+   * Every agent this build implements, with its installation state.
+   *
+   * The same registry `list_agents` returns, so a consumer uses whichever it
+   * already has (this panel loads `app_info` anyway). A list rather than one
+   * field per agent, so adding an adapter needs no change here.
+   */
+  agents: AgentInfo[];
   /** Schema version the database is currently migrated to. */
   schemaVersion: number;
 }

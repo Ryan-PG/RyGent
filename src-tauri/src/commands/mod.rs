@@ -2,9 +2,9 @@
 //!
 //! Handlers are registered in the `invoke_handler` chain in [`crate::run`].
 //! They are intentionally thin: validation and business rules live in the
-//! owning module (`providers`, `secrets`, `workspaces`, `sessions`), so the
-//! command layer only marshals arguments, locks [`AppState`], and converts
-//! errors to messages the UI can display.
+//! owning module (`agents`, `providers`, `secrets`, `workspaces`, `sessions`),
+//! so the command layer only marshals arguments, locks [`AppState`], and
+//! converts errors to messages the UI can display.
 //!
 //! Two rules apply to every command here (spec sections 5, 16, 17):
 //!
@@ -14,6 +14,7 @@
 //!   the frontend are `Result<_, String>` where the string comes from the
 //!   module error types, all of which are constructed without secret material.
 
+pub mod agents;
 pub mod providers;
 pub mod sessions;
 pub mod settings;

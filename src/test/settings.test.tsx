@@ -21,6 +21,8 @@ import SettingsPanel from "../components/SettingsPanel";
 import { preferences } from "../settings/preferences";
 import type { AppInfo, ProviderProfile, UiPreferences } from "../types";
 import {
+  makeAgent,
+  makeAgents,
   makeProvider,
   resetAppStore,
   seedPreferences,
@@ -46,7 +48,7 @@ const APP_INFO: AppInfo = {
   dataDirectory: "C:\\Users\\ryan\\AppData\\Roaming\\com.rygent.app",
   databasePath: "C:\\Users\\ryan\\AppData\\Roaming\\com.rygent.app\\workspace.sqlite3",
   databaseSizeBytes: 2_621_440,
-  claudeCodePath: "C:\\Users\\ryan\\AppData\\Roaming\\npm\\claude.cmd",
+  agents: makeAgents(),
   schemaVersion: 4,
 };
 
@@ -345,14 +347,33 @@ describe("SettingsPanel: About / Storage", () => {
     expect(screen.getByText(APP_INFO.databasePath)).toBeInTheDocument();
     expect(screen.getByText(/2\.5 MiB/)).toBeInTheDocument();
     expect(screen.getByText("4")).toBeInTheDocument();
-    expect(screen.getByText(APP_INFO.claudeCodePath as string)).toBeInTheDocument();
+    // One row per agent this build implements, from the backend registry.
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
+    expect(screen.getByText("Codex")).toBeInTheDocument();
+    expect(
+      screen.getByText(APP_INFO.agents[0].executablePath as string),
+    ).toBeInTheDocument();
   });
 
-  it("says so when Claude Code is not installed rather than showing an empty path", async () => {
-    stubSettings({ appInfo: { ...APP_INFO, claudeCodePath: null } });
+  it("says which agent CLIs are missing rather than showing empty paths", async () => {
+    stubSettings({
+      appInfo: {
+        ...APP_INFO,
+        agents: [
+          makeAgent({ executablePath: null, installed: false }),
+          makeAgent({
+            id: "codex",
+            name: "Codex",
+            executablePath: null,
+            installed: false,
+          }),
+        ],
+      },
+    });
     render(<SettingsPanel />);
 
-    expect(await screen.findByText("not found on PATH")).toBeInTheDocument();
+    await screen.findByText("Claude Code");
+    expect(screen.getAllByText("not found on PATH")).toHaveLength(2);
   });
 
   it("omits the size when the database file does not exist yet", async () => {

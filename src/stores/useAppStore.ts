@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AgentInfo,
   AppInfo,
   BackendStatus,
   ProviderInput,
@@ -15,6 +16,7 @@ import type {
   WorkspaceInput,
   WorkspaceTab,
 } from "../types";
+import { agentsApi } from "../services/agents";
 import { providersApi } from "../services/providers";
 import { workspacesApi } from "../services/workspaces";
 import { settingsApi } from "../services/settings";
@@ -40,10 +42,46 @@ export type WorkspaceDialog =
   | { mode: "edit"; workspaceId: string }
   | null;
 
-/** The only agent this build implements (spec sections 6, 24). */
+/**
+ * The agent a workspace uses when nothing else says otherwise (spec sections 6,
+ * 24): also the default a test fixture starts from.
+ */
 export const AGENT_ID = "claude-code";
 /** Display label for that agent. */
 export const AGENT_LABEL = "Claude Code";
+
+/**
+ * The agents this build ships, with their labels.
+ *
+ * The fallback for the two moments the backend list cannot answer: a plain
+ * browser, and the instant before `list_agents` returns. `installed` is `null`
+ * ("not looked for") rather than `false`, so no surface claims an agent is
+ * missing before anything has checked - the same distinction `SecretStatus`
+ * draws.
+ */
+export const FALLBACK_AGENTS: AgentInfo[] = [
+  { id: AGENT_ID, name: AGENT_LABEL, installed: null, executablePath: null },
+  { id: "codex", name: "Codex", installed: null, executablePath: null },
+];
+
+/**
+ * The display label for an agent id.
+ *
+ * The loaded list wins; without one the built-in names apply, and an id nothing
+ * knows about is shown as itself rather than hidden - a workspace whose agent
+ * this build does not implement must still be describable (spec sections 6, 24).
+ */
+export function agentLabel(agentId: string, agents: AgentInfo[]): string {
+  const known = (agents.length > 0 ? agents : FALLBACK_AGENTS).find(
+    (agent) => agent.id === agentId,
+  );
+  return known?.name ?? agentId;
+}
+
+/** The agent options a picker should offer, with the built-in list as fallback. */
+export function agentOptions(agents: AgentInfo[]): AgentInfo[] {
+  return agents.length > 0 ? agents : FALLBACK_AGENTS;
+}
 
 /** Session state for a tab whose agent has never been started. */
 const NEW_SESSION: TerminalSession = { status: "created", cols: 80, rows: 24 };
@@ -75,15 +113,19 @@ export function tabStatusFromSession(status: TerminalSessionStatus): SessionStat
  *
  * `id` and `workspaceId` are both the workspace id: one tab per workspace (see
  * `WorkspaceTab` in `types`). `model` falls back to the empty string so the UI
- * can say "provider default" instead of rendering `null`.
+ * can say "provider default" instead of rendering `null`. `agent` is the label,
+ * resolved from the loaded agent list so the tab says which CLI it runs.
  */
-function tabFromWorkspace(workspace: Workspace): WorkspaceTab {
+function tabFromWorkspace(
+  workspace: Workspace,
+  agents: AgentInfo[],
+): WorkspaceTab {
   return {
     id: workspace.id,
     workspaceId: workspace.id,
     title: workspace.name,
     projectPath: workspace.projectPath,
-    agent: workspace.agentId === AGENT_ID ? AGENT_LABEL : workspace.agentId,
+    agent: agentLabel(workspace.agentId, agents),
     provider: workspace.providerId,
     model: workspace.model ?? "",
   };
@@ -99,11 +141,12 @@ function tabFromWorkspace(workspace: Workspace): WorkspaceTab {
 function syncTabs(
   tabs: WorkspaceTab[],
   workspaces: Workspace[],
+  agents: AgentInfo[],
 ): WorkspaceTab[] {
   return tabs
     .map((tab) => workspaces.find((workspace) => workspace.id === tab.id))
     .filter((workspace): workspace is Workspace => workspace !== undefined)
-    .map(tabFromWorkspace);
+    .map((workspace) => tabFromWorkspace(workspace, agents));
 }
 
 /** State changes for closing one tab: drop it, retarget the active tab, forget its session. */
@@ -178,6 +221,24 @@ interface AppState {
    * The tab's session is stopped, because a tab is that session's only UI.
    */
   closeTab: (id: string) => void;
+
+  // --- Agents (spec sections 6, 24) ----------------------------------------
+  /**
+   * Every agent the backend implements, with its installation state.
+   *
+   * Empty until `loadAgents` succeeds (and permanently empty in a plain
+   * browser), which is why every reader goes through `agentLabel` /
+   * `agentOptions` and gets the built-in names for that case.
+   */
+  agents: AgentInfo[];
+  /** Set once the first agent load attempt finished (successfully or not). */
+  agentsLoaded: boolean;
+  agentsLoading: boolean;
+
+  /** Fetch the agent list from the backend. */
+  loadAgents: () => Promise<void>;
+  /** Load once (React StrictMode double-invoke safe). */
+  ensureAgentsLoaded: () => void;
 
   // --- Workspace management (Milestone 4) ----------------------------------
   /** Every configured workspace, in creation order. */
@@ -392,6 +453,44 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
   },
 
+  // --- Agents ---------------------------------------------------------------
+
+  agents: [],
+  agentsLoaded: false,
+  agentsLoading: false,
+
+  loadAgents: async () => {
+    if (!isBackendAvailable()) {
+      // Plain-browser dev: no list, and the built-in names stand in for it.
+      set({ agents: [], agentsLoaded: true, agentsLoading: false });
+      return;
+    }
+
+    set({ agentsLoading: true });
+    try {
+      set({
+        agents: await agentsApi.list(),
+        agentsLoaded: true,
+        agentsLoading: false,
+      });
+    } catch {
+      // Deliberately not surfaced: the fallback list already names every agent
+      // this build ships, so a workspace can still be created and described, and
+      // an agent that really cannot run is refused by the backend when the
+      // workspace is saved (or reports itself when the session starts). A banner
+      // here would report a cosmetic failure as a blocking one.
+      set({ agents: [], agentsLoaded: true, agentsLoading: false });
+    }
+  },
+
+  ensureAgentsLoaded: () => {
+    const { agentsLoaded, agentsLoading } = get();
+    if (agentsLoaded || agentsLoading) {
+      return;
+    }
+    void get().loadAgents();
+  },
+
   // --- Workspace management --------------------------------------------------
 
   workspaces: [],
@@ -422,6 +521,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
         workspacesLoading: false,
         workspacesError: null,
         layoutRestored: false,
+        agents: [],
+        agentsLoaded: true,
+        agentsLoading: false,
         backendStatus: "unavailable",
       });
       return;
@@ -445,6 +547,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
         workspacesApi.loadLayout(),
       ]);
 
+      // The agent list is what turns a tab's `agentId` into the CLI's name, so it
+      // is read before the tabs are built. `loadAgents` never rejects (it falls
+      // back to the built-in names), which is why it can sit inside this block:
+      // a failure here must not cost the user their workspace list.
+      if (!get().agentsLoaded) {
+        await get().loadAgents();
+      }
+      const { agents } = get();
+
       // Reopen the remembered tabs - those whose workspace still exists - and
       // start nothing: sessions come back stopped (spec section 14). With
       // "restore tabs" off the layout is still read (so the store knows the
@@ -452,7 +563,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const openTabs = (restoreTabs ? layout.openWorkspaceIds : [])
         .map((id) => workspaces.find((workspace) => workspace.id === id))
         .filter((workspace): workspace is Workspace => workspace !== undefined)
-        .map(tabFromWorkspace);
+        .map((workspace) => tabFromWorkspace(workspace, agents));
       const activeTabId =
         openTabs.find((tab) => tab.id === layout.activeWorkspaceId)?.id ??
         openTabs[0]?.id ??
@@ -504,7 +615,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         return { workspacesError: `workspace not found: ${workspaceId}` };
       }
       return {
-        tabs: [...state.tabs, tabFromWorkspace(workspace)],
+        tabs: [...state.tabs, tabFromWorkspace(workspace, state.agents)],
         activeTabId: workspace.id,
         activePanel: "workspaces",
         workspacesError: null,
@@ -518,7 +629,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const workspaces = await workspacesApi.list();
       set((state) => ({
         workspaces,
-        tabs: [...syncTabs(state.tabs, workspaces), tabFromWorkspace(created)],
+        tabs: [
+          ...syncTabs(state.tabs, workspaces, state.agents),
+          tabFromWorkspace(created, state.agents),
+        ],
         activeTabId: created.id,
         activePanel: "workspaces",
         workspaceDialog: null,
@@ -536,10 +650,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       await workspacesApi.update(id, input);
       const workspaces = await workspacesApi.list();
       // Tabs are re-derived, so a rename lands in the tab bar immediately and a
-      // changed project folder is visible in the panel before the next start.
+      // changed project folder or agent is visible in the panel before the next
+      // start.
       set((state) => ({
         workspaces,
-        tabs: syncTabs(state.tabs, workspaces),
+        tabs: syncTabs(state.tabs, workspaces, state.agents),
         workspaceDialog: null,
       }));
       return true;

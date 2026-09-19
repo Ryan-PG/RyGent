@@ -15,6 +15,10 @@ interface Props {
  * list, not from the tab's denormalized copy - only the tab identity is taken
  * from the tab. Secrets are never involved: the provider is shown by name, and
  * the API key stays in the OS keyring.
+ *
+ * The agent row names the CLI this tab runs and flags one that is configured but
+ * not installed, so a session that cannot start explains itself before the fact
+ * rather than only in the terminal.
  */
 export default function WorkspacePanel({ tab }: Props) {
   // A stable object reference from the list, so this does not re-render on every
@@ -23,6 +27,7 @@ export default function WorkspacePanel({ tab }: Props) {
     state.workspaces.find((entry) => entry.id === tab.workspaceId),
   );
   const providers = useAppStore((state) => state.providers);
+  const agents = useAppStore((state) => state.agents);
   const openWorkspaceDialog = useAppStore((state) => state.openWorkspaceDialog);
   const deleteWorkspace = useAppStore((state) => state.deleteWorkspace);
   // Closing a tab stops its session, so it goes through the confirmation gate
@@ -35,6 +40,12 @@ export default function WorkspacePanel({ tab }: Props) {
   const providerId = workspace?.providerId ?? tab.provider;
   const provider = providers.find((entry) => entry.id === providerId);
   const model = workspace?.model ?? null;
+  // Only the backend's own `false` - a completed PATH search that found nothing
+  // - is reported. `null` means "not looked for", so a plain browser shows no
+  // badge rather than claiming the CLI is missing.
+  const agentMissing =
+    workspace !== undefined &&
+    agents.find((entry) => entry.id === workspace.agentId)?.installed === false;
 
   return (
     <section className="workspace-panel" aria-label="Workspace details">
@@ -97,7 +108,17 @@ export default function WorkspacePanel({ tab }: Props) {
         <dd className="mono">{projectPath}</dd>
 
         <dt>Agent</dt>
-        <dd>{tab.agent}</dd>
+        <dd>
+          {tab.agent}{" "}
+          {agentMissing ? (
+            <span
+              className="badge badge-warn"
+              title="This agent's CLI was not found on PATH. Install it, or edit the workspace to pick another agent - starting a session will fail until then."
+            >
+              not installed
+            </span>
+          ) : null}
+        </dd>
 
         <dt>Provider</dt>
         <dd className="mono">

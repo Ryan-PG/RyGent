@@ -11,9 +11,10 @@
  */
 
 import userEvent from "@testing-library/user-event";
-import { AGENT_ID, useAppStore } from "../stores/useAppStore";
+import { AGENT_ID, AGENT_LABEL, useAppStore } from "../stores/useAppStore";
 import type { Preference } from "../settings/preferences";
 import type {
+  AgentInfo,
   ProviderProfile,
   SecretStatus,
   TerminalSession,
@@ -71,7 +72,13 @@ export function makeProvider(
   };
 }
 
-/** Seed the workspace list the way a successful `list_workspaces` would. */
+/**
+ * Seed the workspace list the way a successful `list_workspaces` would.
+ *
+ * Call `seedAgents` first when a workspace names an agent other than the
+ * built-in default: `openWorkspace` resolves the tab's agent label from the
+ * loaded list, and without one it falls back to the built-in names.
+ */
 export function seedWorkspaces(
   workspaces: Workspace[],
   openIds: string[] = [],
@@ -81,6 +88,55 @@ export function seedWorkspaces(
     // The real action builds the tab, so tab metadata always matches the app.
     useAppStore.getState().openWorkspace(id);
   }
+}
+
+/**
+ * The two agents this build ships, as `list_agents` returns them installed.
+ *
+ * Each gets its own resolved path, the way two installed CLIs really do, so a
+ * test cannot pass by finding one path twice.
+ */
+export function makeAgents(
+  overrides: Record<string, Partial<AgentInfo>> = {},
+): AgentInfo[] {
+  return [
+    makeAgent({
+      executablePath: "C:\\Users\\ryan\\AppData\\Roaming\\npm\\claude.cmd",
+      ...overrides[AGENT_ID],
+    }),
+    makeAgent({
+      id: "codex",
+      name: "Codex",
+      executablePath: "C:\\Users\\ryan\\AppData\\Roaming\\npm\\codex.cmd",
+      ...overrides.codex,
+    }),
+  ];
+}
+
+/**
+ * One agent descriptor.
+ *
+ * `installed: true` is the default because it is what a developer machine that
+ * can run the suite looks like; the "not installed" path is a deliberate
+ * override, which keeps that assertion honest.
+ */
+export function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
+  return {
+    id: AGENT_ID,
+    name: AGENT_LABEL,
+    installed: true,
+    executablePath: "C:\\Users\\ryan\\AppData\\Roaming\\npm\\claude.cmd",
+    ...overrides,
+  };
+}
+
+/** Seed the agent list the way a successful `list_agents` would. */
+export function seedAgents(agents: AgentInfo[] = makeAgents()): void {
+  useAppStore.setState({
+    agents,
+    agentsLoaded: true,
+    agentsLoading: false,
+  });
 }
 
 /** Seed the provider list + keyring status the way `loadProviders` would. */

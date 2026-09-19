@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use tauri::{Manager, RunEvent};
 
+use crate::commands::agents as agent_commands;
 use crate::commands::providers as provider_commands;
 use crate::commands::sessions as session_commands;
 use crate::commands::settings as settings_commands;
@@ -139,6 +140,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent_commands::list_agents,
             provider_commands::list_providers,
             provider_commands::create_provider,
             provider_commands::update_provider,

@@ -21,8 +21,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::agents::claude_code::ClaudeCodeAdapter;
-use crate::agents::AgentAdapter;
+use crate::agents::{descriptors, AgentDescriptor};
 use crate::commands::{error_message, lock_state, AppState};
 use crate::persistence::Storage;
 
@@ -84,8 +83,11 @@ pub struct AppInfo {
     pub database_path: String,
     /// Database file size in bytes; `None` when the file does not exist yet.
     pub database_size_bytes: Option<u64>,
-    /// Resolved Claude Code executable, or `None` when it is not installed.
-    pub claude_code_path: Option<String>,
+    /// Every agent this build implements, with its installation state on this
+    /// machine. A list rather than one field per agent, so the About section
+    /// reports whichever agents exist without the frontend knowing their names
+    /// (spec sections 6, 24).
+    pub agents: Vec<AgentDescriptor>,
     /// Schema version the database is currently migrated to.
     pub schema_version: i64,
 }
@@ -130,16 +132,15 @@ pub fn build_app_info(
         .ok()
         .map(|metadata| metadata.len());
     let schema_version = storage.schema_version().map_err(error_message)?;
-    let claude_code_path = ClaudeCodeAdapter::new()
-        .executable_path()
-        .map(|path| path.display().to_string());
 
     Ok(AppInfo {
         version: version.to_string(),
         data_directory: paths.data_directory.display().to_string(),
         database_path: paths.database_path.display().to_string(),
         database_size_bytes,
-        claude_code_path,
+        // Resolved from the agent registry, so the About section lists exactly
+        // the agents a session can start (spec sections 6, 24).
+        agents: descriptors(),
         schema_version,
     })
 }
@@ -335,8 +336,29 @@ mod tests {
             info.database_size_bytes.unwrap_or_default() > 0,
             "the database file exists after opening it"
         );
-        if let Some(path) = info.claude_code_path {
-            assert!(path.to_lowercase().contains("claude"), "{path}");
+        // Every implemented agent is reported, with a path that agrees with its
+        // own installation state (spec sections 6, 24). Machine-dependent, so
+        // both outcomes are accepted.
+        assert_eq!(info.agents.len(), crate::agents::AGENT_IDS.len());
+        for agent in &info.agents {
+            assert_eq!(
+                agent.installed,
+                agent.executable_path.is_some(),
+                "{} reports an inconsistent installation state",
+                agent.id
+            );
+            if let Some(path) = &agent.executable_path {
+                // The first id segment is the CLI's own name for both agents
+                // (`claude-code` -> `claude`, `codex` -> `codex`), so a resolved
+                // path that does not mention it means discovery found the wrong
+                // executable.
+                let executable = agent.id.split('-').next().unwrap_or_default();
+                assert!(
+                    path.to_lowercase().contains(executable),
+                    "{} resolved to {path}",
+                    agent.id
+                );
+            }
         }
 
         let _ = std::fs::remove_dir_all(&directory);
@@ -361,7 +383,12 @@ mod tests {
             data_directory: "C:/data".to_string(),
             database_path: "C:/data/ai-workspace.sqlite3".to_string(),
             database_size_bytes: Some(4096),
-            claude_code_path: Some("C:/bin/claude.cmd".to_string()),
+            agents: vec![AgentDescriptor {
+                id: "claude-code",
+                name: "Claude Code",
+                installed: true,
+                executable_path: Some("C:/bin/claude.cmd".to_string()),
+            }],
             schema_version: 2,
         };
         let json = serde_json::to_string(&info).expect("serialize");
@@ -369,7 +396,11 @@ mod tests {
         assert!(json.contains("\"dataDirectory\""), "{json}");
         assert!(json.contains("\"databasePath\""), "{json}");
         assert!(json.contains("\"databaseSizeBytes\""), "{json}");
-        assert!(json.contains("\"claudeCodePath\""), "{json}");
         assert!(json.contains("\"schemaVersion\""), "{json}");
+        // The agent list is nested, and its own fields are camelCase too -
+        // `src/types/index.ts` mirrors both.
+        assert!(json.contains("\"agents\""), "{json}");
+        assert!(json.contains("\"executablePath\""), "{json}");
+        assert!(!json.contains("executable_path"), "{json}");
     }
 }

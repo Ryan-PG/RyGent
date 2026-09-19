@@ -1,9 +1,11 @@
 //! Agent adapter abstraction (spec sections 6, 7, 19, 25).
 //!
 //! [`AgentAdapter`] is the seam that lets the workspace host different AI
-//! coding agents. For the MVP only [`claude_code::ClaudeCodeAdapter`] is
-//! implemented; future adapters (Codex, Gemini, ...) plug in behind the same
-//! trait without refactorings elsewhere.
+//! coding agents. Two are implemented - [`claude_code::ClaudeCodeAdapter`] and
+//! [`codex::CodexAdapter`] - and further adapters (Gemini, ...) plug in behind
+//! the same trait, plus one entry in [`AGENT_IDS`], without refactorings
+//! elsewhere: nothing in [`crate::sessions`], [`crate::pty`] or the command
+//! layer names a specific agent.
 //!
 //! An adapter answers three questions, all of which the session manager needs
 //! before it can start anything (spec section 6):
@@ -13,6 +15,12 @@
 //! 2. What environment does one session need? ([`AgentAdapter::build_environment`])
 //! 3. What exactly should be spawned? ([`AgentAdapter::spawn_description`])
 //!
+//! Question 3 is answered by three shared pieces rather than by each adapter
+//! from scratch: [`executable`] finds any agent CLI on `PATH`, [`spawn`] turns a
+//! project folder, a configuration directory and an environment into a
+//! [`ProcessSpawn`], and the adapter supplies only what is genuinely
+//! agent-specific - the environment variables and the arguments.
+//!
 //! Environment construction lives here rather than in the frontend because
 //! environment isolation is a core requirement (spec sections 7, 8): the
 //! adapter receives a [`ResolvedProvider`] (profile + API key in memory) and
@@ -20,12 +28,89 @@
 //! may contain secrets, so callers must never log them or send them to the UI.
 
 pub mod claude_code;
+pub mod codex;
+pub(crate) mod executable;
+pub(crate) mod spawn;
 
 use std::fmt;
 use std::path::PathBuf;
 
 use crate::process::ProcessSpawn;
 use crate::providers::ResolvedProvider;
+
+use claude_code::ClaudeCodeAdapter;
+use codex::CodexAdapter;
+
+/// Every agent id this build implements, in the order the UI offers them.
+///
+/// This is the single place a new agent is registered: [`is_supported`],
+/// [`adapter_for`] and [`descriptors`] all derive from it, so "the agents the
+/// frontend may offer" and "the agents a session can start" cannot drift apart.
+pub const AGENT_IDS: [&str; 2] = [claude_code::AGENT_ID, codex::AGENT_ID];
+
+/// Whether `agent_id` names an agent this build implements.
+///
+/// Used to validate what a user (or an older database row) asks for before it is
+/// persisted, so an unknown id is refused at the boundary with a message that
+/// names it rather than failing later at spawn time (spec sections 9, 24).
+pub fn is_supported(agent_id: &str) -> bool {
+    adapter(agent_id).is_some()
+}
+
+/// The adapter for a persisted `agent_id`.
+///
+/// The error text names the unknown id, so a workspace written by a newer build
+/// - or a hand-edited database row - says exactly what it could not resolve.
+pub fn adapter_for(agent_id: &str) -> Result<Box<dyn AgentAdapter>, String> {
+    adapter(agent_id).ok_or_else(|| format!("unsupported agent: {}", agent_id.trim()))
+}
+
+/// Build the adapter for an id, or `None` when the id is not supported.
+fn adapter(agent_id: &str) -> Option<Box<dyn AgentAdapter>> {
+    match agent_id.trim() {
+        claude_code::AGENT_ID => Some(Box::new(ClaudeCodeAdapter::new())),
+        codex::AGENT_ID => Some(Box::new(CodexAdapter::new())),
+        _other => None,
+    }
+}
+
+/// One supported agent, as the frontend needs to describe it.
+///
+/// Deliberately holds no provider or credential information: the agent list is
+/// about the *machine* (is this CLI installed, where is it), never about a
+/// session's secret (spec section 17).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDescriptor {
+    /// Stable adapter id, e.g. `claude-code`; what a workspace persists.
+    pub id: &'static str,
+    /// Human-readable name, e.g. `Claude Code`.
+    pub name: &'static str,
+    /// Whether the CLI was found on this machine.
+    pub installed: bool,
+    /// Resolved executable path; `null` when the CLI is not installed.
+    pub executable_path: Option<String>,
+}
+
+/// Every supported agent with its installation state on this machine.
+///
+/// The frontend uses this to offer a real agent choice and to explain, before a
+/// session is created, that a CLI it would need is not installed (spec section
+/// 16: "the failure must be understandable before it happens").
+pub fn descriptors() -> Vec<AgentDescriptor> {
+    AGENT_IDS
+        .iter()
+        .filter_map(|agent_id| adapter(agent_id))
+        .map(|adapter| AgentDescriptor {
+            id: adapter.id(),
+            name: adapter.name(),
+            installed: adapter.is_installed(),
+            executable_path: adapter
+                .executable_path()
+                .map(|path| path.display().to_string()),
+        })
+        .collect()
+}
 
 /// Lifecycle state of an agent, re-exported from the process module.
 ///
@@ -44,7 +129,9 @@ pub struct SpawnRequest {
     /// The workspace's project folder. Becomes the agent's working directory.
     pub project_path: PathBuf,
     /// Per-session configuration directory (spec section 8: session isolation).
-    /// Claude Code uses it for `CLAUDE_CONFIG_DIR`.
+    /// Each agent has its own name for it - Claude Code reads
+    /// `CLAUDE_CONFIG_DIR`, Codex reads `CODEX_HOME` - and the adapter is what
+    /// injects it (see [`spawn::build_session_spawn`]).
     pub config_dir: PathBuf,
     /// The provider profile plus the API key read from the secret store.
     pub provider: ResolvedProvider,
@@ -57,7 +144,7 @@ pub struct SpawnRequest {
 /// (spec section 17).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AgentError {
-    /// The agent CLI could not be found on PATH (spec section 16: "Claude Code
+    /// The agent CLI could not be found on PATH (spec section 16: "the agent is
     /// not installed").
     #[error("{agent} was not found on PATH - install it and restart the application")]
     NotInstalled {
@@ -144,9 +231,14 @@ pub trait AgentAdapter: Send + Sync {
     /// owned by [`crate::sessions`], which supervises the real child process.
     fn state(&self) -> AgentState;
 
-    /// Base arguments for an interactive session. Empty for the MVP: Claude
-    /// Code is started as an interactive CLI with no extra flags (spec section
-    /// 6), and per-session configuration travels in the environment.
+    /// Base arguments for an interactive session, shared by every session of
+    /// this agent.
+    ///
+    /// Empty for both implemented agents: they are started as interactive CLIs
+    /// with no extra flags (spec section 6). Anything that varies *per session*
+    /// (Codex's model flag, for example) belongs in
+    /// [`AgentAdapter::spawn_description`], which receives the session's
+    /// provider.
     fn base_arguments(&self) -> Vec<String> {
         Vec::new()
     }
@@ -374,5 +466,106 @@ impl fmt::Debug for dyn AgentAdapter {
             .field("name", &self.name())
             .field("installed", &self.is_installed())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_offers_claude_code_and_codex() {
+        // The agents the UI may offer and the agents a session may start come
+        // from this one list (spec sections 6, 24).
+        assert_eq!(AGENT_IDS, ["claude-code", "codex"]);
+        assert!(is_supported("claude-code"));
+        assert!(is_supported("codex"));
+        assert!(!is_supported("gemini"));
+        assert!(!is_supported(""));
+    }
+
+    #[test]
+    fn every_registered_id_resolves_to_an_adapter_with_that_id() {
+        // Guards the registry against drift: an id in `AGENT_IDS` with no
+        // adapter would silently vanish from the UI, and an adapter registered
+        // under the wrong id would be stored in `workspaces.agent_id` under a
+        // name nothing can resolve later.
+        for agent_id in AGENT_IDS {
+            let adapter = adapter_for(agent_id)
+                .unwrap_or_else(|error| panic!("{agent_id} is registered but not startable: {error}"));
+            assert_eq!(adapter.id(), agent_id);
+            assert!(
+                !adapter.name().trim().is_empty(),
+                "{agent_id} needs a display name for the session UI"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_agent_is_refused_with_its_id() {
+        let error = adapter_for("gemini").expect_err("an unimplemented agent must be refused");
+        assert_eq!(error, "unsupported agent: gemini");
+        assert!(!format!("{error:?}").contains("KEY"), "leaked: {error:?}");
+    }
+
+    /// Ids arrive from the database and from the frontend, both of which may
+    /// carry incidental whitespace; a trailing space must not turn a valid agent
+    /// into an unsupported one.
+    #[test]
+    fn lookup_ignores_surrounding_whitespace() {
+        assert!(is_supported("  codex  "));
+        assert_eq!(adapter_for(" codex ").unwrap().id(), "codex");
+        // A blank id is still refused - it names no agent at all.
+        assert!(adapter_for("   ").is_err());
+    }
+
+    #[test]
+    fn descriptors_describe_every_supported_agent() {
+        let descriptors = descriptors();
+        assert_eq!(descriptors.len(), AGENT_IDS.len());
+
+        let ids: Vec<&str> = descriptors.iter().map(|agent| agent.id).collect();
+        assert_eq!(ids, AGENT_IDS);
+
+        for descriptor in &descriptors {
+            assert!(!descriptor.name.trim().is_empty());
+            // Installation state and the path must agree: a "found" agent with
+            // no path (or the reverse) would show a contradictory hint in the
+            // UI. Machine-dependent, so both outcomes are accepted.
+            assert_eq!(
+                descriptor.installed,
+                descriptor.executable_path.is_some(),
+                "{} reports an inconsistent installation state",
+                descriptor.id
+            );
+            if let Some(path) = &descriptor.executable_path {
+                println!("{}: installed at {path}", descriptor.id);
+            } else {
+                println!("{}: not installed on this machine", descriptor.id);
+            }
+        }
+    }
+
+    /// The wire contract `src/types/index.ts` mirrors: camelCase field names and
+    /// no nested secret-bearing value (spec section 17).
+    #[test]
+    fn descriptors_are_serialized_camel_case_for_the_frontend() {
+        let json = serde_json::to_value(AgentDescriptor {
+            id: "codex",
+            name: "Codex",
+            installed: false,
+            executable_path: None,
+        })
+        .expect("serialize a descriptor");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "codex",
+                "name": "Codex",
+                "installed": false,
+                "executablePath": null,
+            })
+        );
     }
 }

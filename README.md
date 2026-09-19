@@ -20,8 +20,9 @@ Built with **Tauri 2 + Rust + React + TypeScript + Vite**.
   - Each session has its own PTY, process, environment, and configuration
   - Sessions do not share credentials or agent configuration
 
-- 🤖 **Claude Code**
-  - First supported coding agent
+- 🤖 **Supported agents**
+  - **Claude Code** and **OpenAI Codex CLI**
+  - Pick the agent per workspace; the chosen one is shown in the session UI
   - Agent integration is abstracted behind a Rust `AgentAdapter` interface
   - Additional agents can be added without redesigning the workspace architecture
 
@@ -73,7 +74,7 @@ RyGent keeps the UI and native capabilities clearly separated.
 │  Process       Agents      Lifecycle        │
 ├─────────────────────────────────────────────┤
 │                                             │
-│  SQLite       OS Keyring       Claude Code  │
+│  SQLite    OS Keyring    Claude Code/Codex  │
 │                                             │
 └─────────────────────────────────────────────┘
 ```
@@ -91,6 +92,8 @@ Native capabilities such as:
 - lifecycle management
 
 are implemented in Rust.
+
+Each supported agent is a module under `src-tauri/src/agents/` implementing the `AgentAdapter` trait: which executable it looks for, which environment a session receives, and which arguments it launches with. A single registry decides what the UI is offered, what a stored workspace may name, and which adapter a session gets, so adding an agent means one new module plus one registry entry — the session, PTY and process code is shared and unchanged.
 
 ## Requirements
 
@@ -152,21 +155,25 @@ See the official Tauri prerequisites:
 
 https://v2.tauri.app/start/prerequisites/
 
-### Claude Code
+### Agents
 
-Claude Code must be installed and available on `PATH`.
+An agent CLI must be installed and available on `PATH`. RyGent ships two adapters:
 
-Verify:
+| Agent | Executable | Install |
+| --- | --- | --- |
+| Claude Code | `claude` | https://code.claude.com/docs/en/overview |
+| OpenAI Codex CLI | `codex` | https://developers.openai.com/codex/cli/ |
+
+Verify either one:
 
 ```bash
 claude --version
+codex --version
 ```
 
-Install Claude Code using the official documentation:
+Restart RyGent after installing an agent so the application receives the updated `PATH`. Settings → **About / Storage** lists every agent this build implements with the path it resolved, or `not found on PATH`.
 
-https://code.claude.com/docs/en/overview
-
-Restart RyGent after installing Claude Code so the application receives the updated `PATH`.
+You do not have to install both. A workspace that names a missing agent still saves; starting a session then reports the same message instead of failing silently.
 
 ### Windows WebView2
 
@@ -253,14 +260,14 @@ Open the **Providers** panel and create a provider profile.
 
 A provider contains:
 
-| Field                       | Description                          |
-| --------------------------- | ------------------------------------ |
-| Name                        | Display name for the provider        |
-| Base URL                    | Anthropic-compatible API endpoint    |
-| API Key                     | Provider credential                  |
-| Model                       | Default model identifier             |
-| Max Context Tokens          | Optional context-window size         |
-| Extra Environment Variables | Optional provider-specific variables |
+| Field                       | Description                                  |
+| --------------------------- | -------------------------------------------- |
+| Name                        | Display name for the provider                |
+| Base URL                    | API endpoint for the agent's protocol        |
+| API Key                     | Provider credential                          |
+| Model                       | Default model identifier                     |
+| Max Context Tokens          | Optional window size (Claude Code only)      |
+| Extra Environment Variables | Optional provider-specific variables         |
 
 The API key is stored in the operating system's secure credential storage.
 
@@ -272,11 +279,11 @@ Configure:
 
 - Workspace name
 - Project directory
-- Agent
+- Agent (**Claude Code** or **Codex**)
 - Provider
 - Model
 
-RyGent validates the project directory and provider before creating the workspace.
+RyGent validates the project directory and provider before creating the workspace. If the chosen agent is not installed, the form says so but still saves the workspace.
 
 ### 3. Start a Session
 
@@ -287,14 +294,16 @@ RyGent creates an isolated session containing:
 ```text
 Project directory
        +
-Claude Code process
+Selected agent process (Claude Code or Codex)
        +
 Dedicated PTY
        +
 Provider environment
        +
-Session-specific CLAUDE_CONFIG_DIR
+Session-specific configuration directory
 ```
+
+Each agent uses its own configuration directory (Claude Code: `CLAUDE_CONFIG_DIR`, Codex: `CODEX_HOME`), so no two sessions share state.
 
 The session runs independently from other workspaces.
 
@@ -323,7 +332,9 @@ Each session maintains its own:
 - working directory
 - environment
 - credentials
-- Claude configuration
+- agent configuration
+
+Sessions of different agents coexist in the same window, each with its own PTY and process.
 
 ## Provider Credentials
 
@@ -347,13 +358,14 @@ The exact secure storage mechanism depends on the operating system:
 
 ### Authentication
 
-By default, the provider credential is exposed to Claude Code through:
+A provider profile supplies the credential for whichever agent the workspace runs. RyGent exposes it under the variable that agent documents:
 
-```text
-ANTHROPIC_AUTH_TOKEN
-```
+| Agent | Variable | Values also sent |
+| --- | --- | --- |
+| Claude Code | `ANTHROPIC_AUTH_TOKEN` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `CLAUDE_CONFIG_DIR` |
+| Codex | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, `CODEX_HOME` |
 
-Claude Code uses this value as:
+Claude Code uses `ANTHROPIC_AUTH_TOKEN` as:
 
 ```text
 Authorization: Bearer <token>
@@ -364,6 +376,13 @@ RyGent does not automatically expose the stored credential as `ANTHROPIC_API_KEY
 For gateways that specifically require an API-key header, `ANTHROPIC_API_KEY` can be supplied through the provider's additional environment variables.
 
 > Extra environment variables are stored as provider metadata. Do not use them for secrets unless you understand the storage implications.
+
+### Model
+
+The model comes from the provider profile or the workspace override:
+
+- Claude Code receives it as `ANTHROPIC_MODEL`.
+- Codex receives it as the `--model` flag, which outranks its own config file — Codex has no documented environment variable for the model.
 
 ## Model Context Window
 
@@ -390,6 +409,8 @@ CLAUDE_CODE_MAX_CONTEXT_TOKENS
 Leave the field empty if you want Claude Code to use its own default behavior.
 
 The correct value should match the actual context window supported by the provider's model.
+
+> This setting applies to Claude Code only. Codex has no equivalent variable, so RyGent does not forward a context window to a Codex session rather than risk an unknown configuration key.
 
 ## Terminal
 
@@ -449,19 +470,19 @@ Each session receives its own environment.
 For example:
 
 ```text
-Session A
+Session A (Claude Code)
 ├── Project A
 ├── Provider A
 ├── Credential A
 ├── CLAUDE_CONFIG_DIR A
-└── Claude Code process A
+└── claude process A
 
-Session B
+Session B (Codex)
 ├── Project B
 ├── Provider B
 ├── Credential B
-├── CLAUDE_CONFIG_DIR B
-└── Claude Code process B
+├── CODEX_HOME B
+└── codex process B
 ```
 
 Starting or stopping one session does not modify another session's environment.
@@ -545,12 +566,13 @@ A plain `cargo build` may require the frontend `dist/` directory to exist first.
 
 ## Troubleshooting
 
-### Claude Code is not found
+### An agent CLI is not found
 
-Check:
+Check the one the workspace runs:
 
 ```bash
 claude --version
+codex --version
 ```
 
 If it works in your terminal but not in RyGent, restart the application so it receives the current `PATH`.

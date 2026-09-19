@@ -28,7 +28,6 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::agents::claude_code::{ClaudeCodeAdapter, AGENT_ID};
 use crate::agents::AgentAdapter;
 use crate::commands::{error_message, lock_state, AppState};
 use crate::providers::{ProviderRepository, ResolvedProvider};
@@ -176,31 +175,28 @@ pub fn list_sessions(sessions: State<'_, SessionManager>) -> Result<Vec<SessionI
 /// provider's default model (spec section 9: a workspace carries its own
 /// session configuration).
 fn start_request(app: &AppState, workspace_id: &str) -> Result<StartSessionRequest, String> {
-    resolve_start_request(app, workspace_id, &claude_code_adapter)
+    resolve_start_request(app, workspace_id, &agent_adapter)
 }
 
 /// The agent adapter for a persisted `agent_id` (spec sections 6, 24).
 ///
-/// The only adapter this build implements. Kept as a function rather than an
-/// inline `match` so [`resolve_start_request`] can be handed a different factory
-/// by tests, which is how a persisted workspace is proven startable end to end
-/// without a Claude Code installation (`FakeAgentAdapter`).
-fn claude_code_adapter(agent_id: &str) -> Result<Box<dyn AgentAdapter>, String> {
-    match agent_id {
-        AGENT_ID => Ok(Box::new(ClaudeCodeAdapter::new())),
-        // Only Claude Code is implemented for the MVP (spec sections 6, 24);
-        // the message names the id so a future adapter's absence is obvious.
-        other => Err(format!("unsupported agent: {other}")),
-    }
+/// A thin wrapper over the agent registry ([`crate::agents::adapter_for`]): which
+/// agents exist is the registry's business, and the command layer only decides
+/// what an unknown id looks like to the user. Kept as a function rather than an
+/// inline call so [`resolve_start_request`] can be handed a different factory by
+/// tests, which is how a persisted workspace is proven startable end to end
+/// without any agent CLI installed (`FakeAgentAdapter`).
+fn agent_adapter(agent_id: &str) -> Result<Box<dyn AgentAdapter>, String> {
+    crate::agents::adapter_for(agent_id)
 }
 
 /// Resolve the workspace, provider and credential for a start request, with a
 /// substitute agent.
 ///
 /// Test-only: the M4 command tests use it to prove that a workspace created
-/// through the workspace commands resolves to a startable session without a
-/// Claude Code installation (spec section 23). The agent id is ignored on
-/// purpose - the production `match` above is exercised by the tests in this
+/// through the workspace commands resolves to a startable session without an
+/// agent CLI installed (spec section 23). The agent id is ignored on purpose -
+/// the production registry lookup above is exercised by the tests in this
 /// module.
 #[cfg(test)]
 pub(crate) fn resolve_start_request_for_tests(
@@ -274,6 +270,8 @@ pub fn stop_all_sessions(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::claude_code::AGENT_ID;
+    use crate::agents::codex::AGENT_ID as CODEX_AGENT_ID;
     use crate::persistence::Storage;
     use crate::providers::{ProviderInput, ProviderRepository};
     use crate::secrets::memory::InMemorySecretStore;
@@ -424,10 +422,80 @@ mod tests {
         let error = start_request(&app, &orphan.id).expect_err("missing provider");
         assert!(error.starts_with("provider not found for workspace Project Alpha"), "{error}");
 
-        // An agent this build does not implement (spec section 24: Claude Code only).
-        let (workspace_id, _provider_id) = workspace_with_provider(&app, "codex", None);
+        // An agent this build does not implement (spec section 24). Codex is
+        // implemented, so this names an agent no adapter claims.
+        let (workspace_id, _provider_id) = workspace_with_provider(&app, "gemini", None);
         let error = start_request(&app, &workspace_id).expect_err("unsupported agent");
-        assert_eq!(error, "unsupported agent: codex");
+        assert_eq!(error, "unsupported agent: gemini");
+    }
+
+    /// A Codex workspace resolves through the *same* start path as a Claude Code
+    /// one and gets a real Codex adapter - the command layer's half of "a user
+    /// can create and run a Codex session" (spec sections 6, 8, 24).
+    ///
+    /// The provider, the model override and the keyring secret are resolved
+    /// identically; only the adapter differs, and it is the one the workspace
+    /// row asked for.
+    #[test]
+    fn a_codex_workspace_resolves_to_a_real_codex_adapter() {
+        let app = app_state();
+        let (workspace_id, provider_id) = workspace_with_provider(&app, CODEX_AGENT_ID, None);
+
+        let request = start_request(&app, &workspace_id).expect("resolve the start request");
+
+        assert_eq!(request.adapter.id(), CODEX_AGENT_ID);
+        assert_eq!(request.adapter.name(), "Codex");
+        assert_eq!(request.provider.id, provider_id);
+        assert_eq!(request.provider.api_key(), Some("KEY_A"));
+        // The credential must not be printable (spec section 17).
+        assert!(!format!("{request:?}").contains("KEY_A"));
+
+        // Codex's environment is Codex's own: no Anthropic variable comes along,
+        // and the model is the documented flag rather than a variable.
+        let environment = request.adapter.build_environment(&request.provider);
+        let names: Vec<&str> = environment
+            .iter()
+            .map(|(name, _value)| name.as_str())
+            .collect();
+        assert_eq!(names, vec!["OPENAI_BASE_URL", "OPENAI_API_KEY"]);
+        assert!(!format!("{:?}", request.adapter).contains("KEY_A"));
+    }
+
+    /// Claude Code and Codex workspaces coexist and each resolves to its own
+    /// agent: the two never share an adapter, an environment or a provider
+    /// (spec sections 7, 8).
+    #[test]
+    fn a_claude_code_and_a_codex_workspace_resolve_to_different_agents() {
+        let app = app_state();
+        let (claude_id, claude_provider) = workspace_with_provider(&app, AGENT_ID, None);
+        let (codex_id, _codex_provider) = workspace_with_provider(&app, CODEX_AGENT_ID, None);
+
+        let claude = start_request(&app, &claude_id).expect("resolve the Claude Code workspace");
+        let codex = start_request(&app, &codex_id).expect("resolve the Codex workspace");
+
+        assert_eq!(claude.adapter.id(), AGENT_ID);
+        assert_eq!(codex.adapter.id(), CODEX_AGENT_ID);
+        assert_ne!(claude.adapter.id(), codex.adapter.id());
+        assert_eq!(claude.provider.id, claude_provider);
+
+        // Each session is given only its own agent's variables.
+        let claude_names: Vec<String> = claude
+            .adapter
+            .build_environment(&claude.provider)
+            .into_iter()
+            .map(|(name, _value)| name)
+            .collect();
+        let codex_names: Vec<String> = codex
+            .adapter
+            .build_environment(&codex.provider)
+            .into_iter()
+            .map(|(name, _value)| name)
+            .collect();
+        assert!(claude_names.iter().all(|name| name.starts_with("ANTHROPIC")
+            || name == "CLAUDE_CONFIG_DIR"
+            || name == "CLAUDE_CODE_MAX_CONTEXT_TOKENS"));
+        assert!(codex_names.iter().all(|name| name.starts_with("OPENAI")));
+        assert!(claude_names.iter().all(|name| !codex_names.contains(name)));
     }
 
     /// The command boundary's half of spec sections 16 and 17: every way a
