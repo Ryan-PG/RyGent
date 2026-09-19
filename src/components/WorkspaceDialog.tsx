@@ -1,9 +1,16 @@
 /**
  * Create / edit a workspace (spec section 12, "New Workspace").
  *
- * Fields: project folder (with the native picker), agent (fixed: Claude Code),
- * provider (from the configured profiles), model (defaults to the chosen
- * provider's model and stays editable) and name.
+ * Fields: project folder (with the native picker), agent (every agent the
+ * backend reports, spec section 24), provider (from the configured profiles),
+ * model (defaults to the chosen provider's model and stays editable) and name.
+ *
+ * The agent list comes from `list_agents`, so this form never names an agent:
+ * a new adapter in the Rust core appears here with no change to this file. An
+ * agent that is not installed can still be saved - the workspace is a
+ * declaration, and installing the CLI later should not require retyping it -
+ * but the dialog says so, and starting a session explains the failure again
+ * from the backend's own discovery result.
  *
  * The folder field is always editable, and the picker is treated as a
  * convenience: if it is unavailable - a plain browser, or a window where the
@@ -16,9 +23,13 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { pickProjectFolder, type FolderPickerOutcome } from "../services/workspaces";
-import { AGENT_ID, AGENT_LABEL, useAppStore } from "../stores/useAppStore";
+import {
+  AGENT_ID,
+  agentOptions,
+  useAppStore,
+} from "../stores/useAppStore";
 import { preferences } from "../settings/preferences";
-import type { ProviderProfile, Workspace, WorkspaceInput } from "../types";
+import type { AgentInfo, ProviderProfile, Workspace, WorkspaceInput } from "../types";
 
 interface Props {
   /** Workspace being edited; omitted when creating a new one. */
@@ -67,6 +78,32 @@ function defaultProvider(
   return providers[0]?.id ?? "";
 }
 
+/**
+ * The agent options this form offers.
+ *
+ * The backend's list is the source of truth. One case needs adding to: a
+ * persisted workspace naming an agent this build no longer lists (an older
+ * release, or an adapter removed from the registry). Dropping the option would
+ * leave the select blank and silently rewrite the workspace to a different
+ * agent on the next save, so the value is shown as-is and only replaced when
+ * the user picks something else.
+ */
+function agentChoices(agents: AgentInfo[], currentId: string): AgentInfo[] {
+  const options = agentOptions(agents);
+  if (currentId === "" || options.some((agent) => agent.id === currentId)) {
+    return options;
+  }
+  return [
+    ...options,
+    {
+      id: currentId,
+      name: `${currentId} (not in this build)`,
+      installed: null,
+      executablePath: null,
+    },
+  ];
+}
+
 export default function WorkspaceDialog({
   workspace,
   providers,
@@ -82,8 +119,14 @@ export default function WorkspaceDialog({
   const configuredDefaultId = useAppStore((state) =>
     preferences.workspacesDefaultProvider.get(state.preferences),
   );
+  const agents = useAppStore((state) => state.agents);
+  // The dialog is the surface that needs the list, so it asks for it rather than
+  // assuming startup fetched it - the same pattern the Providers panel uses. In
+  // a plain browser this resolves to the built-in names.
+  const ensureAgentsLoaded = useAppStore((state) => state.ensureAgentsLoaded);
   const [name, setName] = useState(workspace?.name ?? "");
   const [projectPath, setProjectPath] = useState(workspace?.projectPath ?? "");
+  const [agentId, setAgentId] = useState(workspace?.agentId ?? AGENT_ID);
   const [providerId, setProviderId] = useState(() =>
     defaultProvider(workspace, providers, configuredDefaultId),
   );
@@ -111,7 +154,18 @@ export default function WorkspaceDialog({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onCancel]);
 
+  // `ensureAgentsLoaded` is a no-op once the list is in (startup loads it too),
+  // so this costs one guard check in the ordinary case.
+  useEffect(() => {
+    ensureAgentsLoaded();
+  }, [ensureAgentsLoaded]);
+
   const selectedProvider = providers.find((p) => p.id === providerId);
+  const choices = agentChoices(agents, agentId);
+  const selectedAgent = choices.find((agent) => agent.id === agentId);
+  // "Not looked for" yields no hint: only the backend's own `false` - a
+  // completed `PATH` search that found nothing - is worth acting on.
+  const agentMissing = selectedAgent?.installed === false;
 
   function handleProviderChange(nextId: string) {
     setProviderId(nextId);
@@ -135,7 +189,7 @@ export default function WorkspaceDialog({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const problem = validate(name, projectPath, providerId, providers.length);
+    const problem = validate(name, projectPath, agentId, providerId, providers.length);
     if (problem !== null) {
       setLocalError(problem);
       return;
@@ -146,7 +200,7 @@ export default function WorkspaceDialog({
     await onSubmit({
       name: name.trim(),
       projectPath: projectPath.trim(),
-      agentId: AGENT_ID,
+      agentId,
       providerId,
       // Blank means "use the provider's default model".
       model: model.trim() === "" ? null : model.trim(),
@@ -215,12 +269,19 @@ export default function WorkspaceDialog({
 
           <label className="field">
             <span className="field-label">Agent</span>
-            <select value={AGENT_ID} disabled>
-              <option value={AGENT_ID}>{AGENT_LABEL}</option>
+            <select
+              value={agentId}
+              onChange={(event) => setAgentId(event.target.value)}
+            >
+              {choices.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
             </select>
             <p className="field-hint muted">
-              The only agent this version supports. Codex and Gemini are future
-              adapters behind the same interface.
+              The CLI this workspace runs. Each session gets its own config
+              directory, so two agents - or two sessions - never share state.
             </p>
           </label>
 
@@ -260,6 +321,14 @@ export default function WorkspaceDialog({
             </p>
           </label>
         </div>
+
+        {agentMissing ? (
+          <p className="alert alert-warn" role="alert">
+            {selectedAgent.name} was not found on this machine's PATH. The
+            workspace can still be saved; install the CLI before starting it, or
+            a session will fail with the same message.
+          </p>
+        ) : null}
 
         {noProviders ? (
           <p className="alert alert-warn" role="alert">
@@ -301,6 +370,7 @@ export default function WorkspaceDialog({
 function validate(
   name: string,
   projectPath: string,
+  agentId: string,
   providerId: string,
   providerCount: number,
 ): string | null {
@@ -309,6 +379,9 @@ function validate(
   }
   if (projectPath.trim() === "") {
     return "Project folder is required.";
+  }
+  if (agentId.trim() === "") {
+    return "Select an agent.";
   }
   if (providerCount === 0) {
     return "Add a provider profile before creating a workspace.";

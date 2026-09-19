@@ -302,7 +302,7 @@ export default function SessionView({ tab }: Props) {
             <BackendNotice
               message={
                 "Sessions are hosted by the Rust core, which is not present in this window. " +
-                "Start the desktop app with `npm run tauri dev` to run Claude Code in this tab. " +
+                `Start the desktop app with \`npm run tauri dev\` to run ${tab.agent} in this tab. ` +
                 "Until then the buttons and the terminal below stay interactive so the layout can be inspected."
               }
             />

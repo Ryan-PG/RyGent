@@ -9,7 +9,8 @@
  * - **Sessions** - restore the tab set at launch, confirm before closing a
  *   running session.
  * - **Workspaces** - the provider preselected in the New Workspace dialog.
- * - **About / Storage** - version, paths, database size, schema version.
+ * - **About / Storage** - version, paths, database size, schema version, and
+ *   the resolved path of every agent CLI this build implements.
  *
  * ## How a setting is saved
  *
@@ -23,7 +24,7 @@
  * this panel is a palette name, a number, a boolean, or a provider **id**.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useAppStore } from "../stores/useAppStore";
 import BackendNotice from "./BackendNotice";
 import {
@@ -359,12 +360,20 @@ export default function SettingsPanel() {
               <dt>Schema version</dt>
               <dd className="mono">{appInfo.schemaVersion}</dd>
 
-              <dt>Claude Code</dt>
-              <dd className="mono">
-                {appInfo.claudeCodePath ?? (
-                  <span className="muted">not found on PATH</span>
-                )}
-              </dd>
+              {/* One row per agent this build implements, from the same backend
+                  registry the workspace form reads. An empty list only happens
+                  on a build with no adapters, which is why nothing is added in
+                  that case rather than an empty placeholder row. */}
+              {appInfo.agents.map((agent) => (
+                <Fragment key={agent.id}>
+                  <dt>{agent.name}</dt>
+                  <dd className="mono">
+                    {agent.executablePath ?? (
+                      <span className="muted">not found on PATH</span>
+                    )}
+                  </dd>
+                </Fragment>
+              ))}
             </dl>
 
             <div className="settings-about-actions">

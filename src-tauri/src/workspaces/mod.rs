@@ -26,7 +26,6 @@ use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agents::claude_code::AGENT_ID;
 use crate::persistence::{now_rfc3339, Storage, StorageError};
 use crate::providers::{ProviderError, ProviderRepository};
 
@@ -99,7 +98,7 @@ pub enum WorkspaceError {
     UnknownProvider(String),
 
     /// `agent_id` names an adapter this build does not implement (spec section
-    /// 24: Claude Code only for the MVP).
+    /// 24: only the registered agents may be started).
     #[error("unsupported agent: {0}")]
     UnsupportedAgent(String),
 
@@ -517,12 +516,17 @@ fn validate_project_path(project_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Only Claude Code is implemented for the MVP (spec sections 6, 24); the
-/// message names the id so a future adapter's absence is obvious.
+/// Only an agent this build implements may be persisted (spec sections 6, 24);
+/// the message names the id so an adapter's absence is obvious.
+///
+/// The set of implemented agents is owned by [`crate::agents`], so registering a
+/// new adapter there is all it takes for workspaces to accept it - the two can
+/// never disagree about which ids are real.
 fn validate_agent(agent_id: &str) -> Result<()> {
-    match agent_id.trim() {
-        AGENT_ID => Ok(()),
-        other => Err(WorkspaceError::UnsupportedAgent(other.to_string())),
+    if crate::agents::is_supported(agent_id) {
+        Ok(())
+    } else {
+        Err(WorkspaceError::UnsupportedAgent(agent_id.trim().to_string()))
     }
 }
 
@@ -560,6 +564,7 @@ impl<'storage> fmt::Debug for WorkspaceRepository<'storage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::claude_code::AGENT_ID;
     use crate::persistence::test_support::TempDb;
 
     fn input(name: &str) -> WorkspaceInput {
@@ -854,6 +859,45 @@ mod tests {
         ));
     }
 
+    /// Every agent the registry implements is persistable (spec sections 6, 9,
+    /// 24), so choosing Codex in the workspace form stores a row that a session
+    /// can actually start - the persistence half of "a user can create and run a
+    /// Codex session".
+    #[test]
+    fn every_supported_agent_can_be_persisted_and_listed_back() {
+        let database = TempDb::new("manager-agents");
+        let storage = database.storage();
+        let project = TempDir::new("manager-agents-project");
+        let provider_id = provider(&storage, "a");
+        let manager = WorkspaceManager::new(&storage);
+
+        for (index, agent_id) in crate::agents::AGENT_IDS.iter().enumerate() {
+            let created = manager
+                .create(&WorkspaceInput {
+                    name: format!("Project {index}"),
+                    agent_id: (*agent_id).to_string(),
+                    ..manager_input(project.path(), &provider_id)
+                })
+                .unwrap_or_else(|error| panic!("{agent_id} must be creatable: {error}"));
+            assert_eq!(created.agent_id, *agent_id);
+        }
+
+        // Both persisted workspaces are listed back with their own agent, which
+        // is what lets sessions with different agents coexist (spec section 9).
+        let listed: Vec<String> = manager
+            .list()
+            .expect("list workspaces")
+            .into_iter()
+            .map(|workspace| workspace.agent_id)
+            .collect();
+        for agent_id in crate::agents::AGENT_IDS {
+            assert!(
+                listed.iter().any(|listed_id| listed_id == agent_id),
+                "{agent_id} was persisted but not listed: {listed:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_manager_rejects_a_project_folder_that_is_not_a_directory() {
         let database = TempDb::new("manager-project-path");
@@ -910,15 +954,17 @@ mod tests {
         assert!(matches!(error, WorkspaceError::UnknownProvider(ref id) if id == "no-such-provider"));
         assert_eq!(error.to_string(), "provider not found: no-such-provider");
 
-        // An agent this build does not implement (spec section 24).
+        // An agent this build does not implement (spec section 24). Codex is a
+        // *supported* agent since it was added alongside Claude Code, so this
+        // uses an id no adapter claims.
         let error = manager
             .create(&WorkspaceInput {
-                agent_id: "codex".to_string(),
+                agent_id: "gemini".to_string(),
                 ..manager_input(project.path(), &provider_id)
             })
             .expect_err("an unimplemented agent must be refused");
-        assert!(matches!(error, WorkspaceError::UnsupportedAgent(ref id) if id == "codex"));
-        assert_eq!(error.to_string(), "unsupported agent: codex");
+        assert!(matches!(error, WorkspaceError::UnsupportedAgent(ref id) if id == "gemini"));
+        assert_eq!(error.to_string(), "unsupported agent: gemini");
 
         // Empty fields are reported as themselves, before the filesystem and
         // provider checks, so the message names what the user must fix.

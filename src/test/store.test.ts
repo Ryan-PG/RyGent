@@ -11,8 +11,10 @@ import { useAppStore } from "../stores/useAppStore";
 import { preferences } from "../settings/preferences";
 import { resolveTheme } from "../settings/theme";
 import {
+  makeAgents,
   makeWorkspace,
   resetAppStore,
+  seedAgents,
   seedPreference,
   seedPreferences,
   seedSession,
@@ -30,12 +32,21 @@ const WORKSPACES = [
   makeWorkspace({ id: "ws-3", name: "Gamma", projectPath: "D:\\Projects\\gamma" }),
 ];
 
+/** The same kind of workspace, running the other agent this build ships. */
+const CODEX_WORKSPACE = makeWorkspace({
+  id: "ws-codex",
+  name: "Delta",
+  projectPath: "D:\\Projects\\delta",
+  agentId: "codex",
+});
+
 /**
  * Stubs every command a successful app start issues.
  *
  * `list_ui_preferences` belongs here because `initializeWorkspaces` awaits the
  * preferences first - the restore-tabs preference decides whether the stored
- * layout is used at all.
+ * layout is used at all. `list_agents` is read by the same startup path, because
+ * it is what turns a workspace's `agentId` into the CLI's name.
  */
 function stubStartup(
   workspaces = WORKSPACES,
@@ -47,6 +58,7 @@ function stubStartup(
   stubCommands({
     list_ui_preferences: () => ({}),
     list_workspaces: () => workspaces,
+    list_agents: () => makeAgents(),
     load_workspace_layout: () => layout,
     save_workspace_layout: (args) => args?.layout,
   });
@@ -78,6 +90,9 @@ describe("app store: initial state", () => {
     expect(state.backendStatus).toBe("connecting");
 
     expect(state.sessions).toEqual({});
+
+    expect(state.agents).toEqual([]);
+    expect(state.agentsLoaded).toBe(false);
   });
 });
 
@@ -177,6 +192,9 @@ describe("app store: loading workspaces", () => {
     expect(state.workspacesError).toBeNull();
     // The stored layout was never read, so it must not be written back.
     expect(state.layoutRestored).toBe(false);
+    // No agent list either - and marked loaded, so no retry loop starts.
+    expect(state.agents).toEqual([]);
+    expect(state.agentsLoaded).toBe(true);
 
     await useAppStore.getState().loadProviders();
     expect(useAppStore.getState().backendStatus).toBe("unavailable");
@@ -432,6 +450,95 @@ describe("app store: workspace lifecycle", () => {
     const state = useAppStore.getState();
     expect(state.workspaces.map((workspace) => workspace.id)).toEqual(["ws-2"]);
     expect(state.tabs.map((tab) => tab.id)).toEqual(["ws-2"]);
+  });
+});
+
+describe("app store: agents", () => {
+  it("names a tab's agent from the backend list rather than from a hardcoded label", async () => {
+    stubStartup([CODEX_WORKSPACE, WORKSPACES[0]], {
+      openWorkspaceIds: ["ws-codex", "ws-1"],
+      activeWorkspaceId: "ws-codex",
+    });
+
+    await useAppStore.getState().initializeWorkspaces();
+
+    // Both agents coexist: two workspaces, two tabs, each labelled by its own
+    // CLI. Nothing about the tab machinery is agent-specific.
+    expect(useAppStore.getState().tabs.map((tab) => tab.agent)).toEqual([
+      "Codex",
+      "Claude Code",
+    ]);
+  });
+
+  it("falls back to the built-in names when the list cannot be read, and says nothing about it", async () => {
+    stubCommands({
+      list_ui_preferences: () => ({}),
+      list_workspaces: () => [CODEX_WORKSPACE],
+      list_agents: () => {
+        throw "agent discovery is unavailable";
+      },
+      load_workspace_layout: () => ({
+        openWorkspaceIds: ["ws-codex"],
+        activeWorkspaceId: "ws-codex",
+      }),
+    });
+
+    await useAppStore.getState().initializeWorkspaces();
+
+    const state = useAppStore.getState();
+    // The built-in list still names the agent, so the tab is describable...
+    expect(state.tabs[0].agent).toBe("Codex");
+    // ...and a cosmetic failure is not reported as a blocking one.
+    expect(state.workspacesError).toBeNull();
+    expect(state.agents).toEqual([]);
+    expect(state.agentsLoaded).toBe(true);
+  });
+
+  it("loads the list once, so StrictMode's double invoke cannot refetch", async () => {
+    stubCommands({ list_agents: () => makeAgents() });
+
+    useAppStore.getState().ensureAgentsLoaded();
+    useAppStore.getState().ensureAgentsLoaded();
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().agents).toHaveLength(2);
+    });
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "list_agents"),
+    ).toHaveLength(1);
+  });
+
+  it("re-derives a tab's agent when the workspace is switched to another one", async () => {
+    const switched = { ...CODEX_WORKSPACE, id: "ws-1", name: "Alpha" };
+    stubCommands({
+      update_workspace: () => switched,
+      list_workspaces: () => [switched],
+    });
+    seedAgents();
+    seedWorkspaces([WORKSPACES[0]], ["ws-1"]);
+
+    await useAppStore.getState().updateWorkspace("ws-1", {
+      name: "Alpha",
+      projectPath: "D:\\Projects\\alpha",
+      agentId: "codex",
+      providerId: "prov-1",
+      model: null,
+    });
+
+    // The panel says which CLI the tab runs before the next start, not after it.
+    expect(useAppStore.getState().tabs[0].agent).toBe("Codex");
+  });
+
+  it("keeps an unknown agent id visible instead of hiding the workspace", () => {
+    seedAgents();
+    seedWorkspaces(
+      [makeWorkspace({ id: "ws-future", name: "Future", agentId: "gemini" })],
+      ["ws-future"],
+    );
+
+    // A workspace written by a build that knew another adapter must still be
+    // describable: the id is shown as itself rather than blanked out.
+    expect(useAppStore.getState().tabs[0].agent).toBe("gemini");
   });
 });
 

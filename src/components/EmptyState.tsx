@@ -24,7 +24,7 @@ export default function EmptyState() {
       <h2>No workspace open</h2>
       <p className="muted">
         A workspace is a local project folder bound to an agent and a provider.
-        Open one to start a Claude Code session in it.
+        Open one to start a session with its agent in it.
       </p>
 
       {backendMissing ? (

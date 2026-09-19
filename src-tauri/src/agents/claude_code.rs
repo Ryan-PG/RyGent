@@ -6,13 +6,20 @@
 //! fully built environment (spec section 8). PTY wiring and process
 //! supervision live in [`crate::pty`] and [`crate::sessions`]; nothing here
 //! implements terminal emulation.
+//!
+//! What this adapter does *not* implement is the part every agent shares:
+//! finding the CLI on `PATH` ([`super::executable`]) and turning the project
+//! folder, the configuration directory and an environment into a spawn
+//! description ([`super::spawn`]). Only the Anthropic environment below is
+//! Claude Code's own.
 
-use std::env;
 use std::path::{Path, PathBuf};
 
 use crate::process::ProcessSpawn;
 use crate::providers::ResolvedProvider;
 
+use super::executable::find_in_path;
+use super::spawn::build_session_spawn;
 use super::{AgentAdapter, AgentError, AgentState, SpawnRequest};
 
 /// Stable adapter id persisted in `workspaces.agent_id`.
@@ -98,58 +105,22 @@ impl ClaudeCodeAdapter {
     /// environment and the config-directory isolation) on a machine where
     /// Claude Code is not installed (spec section 23).
     ///
-    /// The environment is `build_environment` plus `CLAUDE_CONFIG_DIR` **last**,
-    /// so a provider's extra variables cannot redirect the session away from its
-    /// own configuration directory: config isolation (spec section 8) must not
-    /// be optional.
+    /// The environment is `build_environment` plus `CLAUDE_CONFIG_DIR` **last**
+    /// (applied by [`build_session_spawn`]), so a provider's extra variables
+    /// cannot redirect the session away from its own configuration directory:
+    /// config isolation (spec section 8) must not be optional.
     pub(crate) fn build_spawn(
         executable: &Path,
         args: &[String],
         request: &SpawnRequest,
     ) -> Result<ProcessSpawn, AgentError> {
-        // The project folder is the agent's working directory, so a missing or
-        // non-directory path must fail the start attempt with a clear message
-        // (spec section 16: "Project directory deleted").
-        if !request.project_path.exists() {
-            return Err(AgentError::ProjectDirectoryMissing {
-                path: request.project_path.display().to_string(),
-            });
-        }
-        if !request.project_path.is_dir() {
-            return Err(AgentError::ProjectDirectoryInvalid {
-                path: request.project_path.display().to_string(),
-            });
-        }
-
-        // ... and that it can actually be opened. `is_dir()` proves the path is
-        // a directory, not that this process may use it; without this probe the
-        // failure surfaces much later and much less clearly, from inside the
-        // spawn (`CreateProcessW`'s "The directory name is invalid." or a bare
-        // `EACCES`), which names neither the folder nor the fix (spec section
-        // 16: "Permission errors").
-        check_project_directory_access(&request.project_path)?;
-
-        // Per-session configuration directory (settings, session history,
-        // plugins). Created here because it is only needed by Claude Code.
-        std::fs::create_dir_all(&request.config_dir).map_err(|error| {
-            AgentError::ConfigDirectory {
-                path: request.config_dir.display().to_string(),
-                message: error.to_string(),
-            }
-        })?;
-
-        let mut environment = claude_environment(&request.provider);
-        environment.push((
-            ENV_CONFIG_DIR.to_string(),
-            request.config_dir.display().to_string(),
-        ));
-
-        Ok(ProcessSpawn::new(
-            executable.to_path_buf(),
-            args.to_vec(),
-            request.project_path.clone(),
-            environment,
-        ))
+        build_session_spawn(
+            executable,
+            args,
+            request,
+            claude_environment(&request.provider),
+            ENV_CONFIG_DIR,
+        )
     }
 }
 
@@ -252,105 +223,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 }
 
-/// Check that the project folder can be opened, so a permission problem is
-/// reported as itself (spec section 16) instead of as a spawn failure.
-///
-/// Opening the directory for reading is the cheapest faithful probe: on both
-/// platforms that is where the OS applies the access check, and a session
-/// cannot run against a folder whose contents the agent may not read anyway
-/// (Claude Code reads the project). Only the first entry (if any) is inspected;
-/// an empty project folder is perfectly valid.
-fn check_project_directory_access(path: &Path) -> Result<(), AgentError> {
-    match std::fs::read_dir(path) {
-        Ok(mut entries) => {
-            // Touching the iterator forces the platform call that the open
-            // itself may have deferred (`FindFirstFileW` / `opendir`).
-            let _ = entries.next();
-            Ok(())
-        }
-        Err(error) => Err(project_directory_access_error(path, &error)),
-    }
-}
-
-/// Map an access failure on a project folder to its user-facing error.
-///
-/// Split out from the probe so the mapping - which is what the user reads - is
-/// testable without a directory that is genuinely unreadable (spec section 23).
-fn project_directory_access_error(path: &Path, error: &std::io::Error) -> AgentError {
-    AgentError::ProjectDirectoryNotAccessible {
-        path: path.display().to_string(),
-        message: error.to_string(),
-    }
-}
-
-/// `which`-style PATH lookup, implemented with std only.
-///
-/// Platform notes (spec section 18): on Windows the CLI may be a `.exe`,
-/// `.cmd`, or `.bat` shim (e.g. npm global installs), so the common PATHEXT
-/// extensions are tried; on Unix the candidate must be a regular file with an
-/// executable bit.
-#[cfg(windows)]
-fn find_in_path(executable: &str) -> Option<PathBuf> {
-    find_in_path_with(&env::var_os("PATH")?, executable)
-}
-
-#[cfg(not(windows))]
-fn find_in_path(executable: &str) -> Option<PathBuf> {
-    find_in_path_with(&env::var_os("PATH")?, executable)
-}
-
-/// Extensions a Windows CLI may use, in preference order.
-///
-/// This mirrors the common `PATHEXT` order and deliberately tries the bare name
-/// **last**: npm's global install ships `claude` (a POSIX shell script), and
-/// `claude.cmd` alongside it, and `CreateProcessW` cannot launch the script.
-/// Preferring the real Windows entry point is what makes discovery produce a
-/// path that can actually be spawned (spec sections 6, 18). `.ps1` shims are
-/// skipped on purpose: they need PowerShell to interpret them.
-#[cfg(windows)]
-const WINDOWS_EXTENSIONS: [&str; 5] = [".exe", ".com", ".cmd", ".bat", ""];
-
-/// PATH lookup over an explicit `PATH` value.
-///
-/// Split out from [`find_in_path`] so executable discovery - including the
-/// platform differences above - is unit-testable without touching the test
-/// process's own `PATH`.
-#[cfg(windows)]
-pub(crate) fn find_in_path_with(path_var: &std::ffi::OsStr, executable: &str) -> Option<PathBuf> {
-    for directory in env::split_paths(path_var) {
-        for extension in WINDOWS_EXTENSIONS {
-            let candidate = directory.join(format!("{executable}{extension}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// See the Windows counterpart above.
-#[cfg(not(windows))]
-pub(crate) fn find_in_path_with(path_var: &std::ffi::OsStr, executable: &str) -> Option<PathBuf> {
-    for directory in env::split_paths(path_var) {
-        let candidate = directory.join(executable);
-        if is_executable_file(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[cfg(not(windows))]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    path.is_file()
-        && path
-            .metadata()
-            .map(|meta| meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,8 +270,7 @@ mod tests {
     fn env_value(environment: &[(String, String)], key: &str) -> Option<String> {
         environment
             .iter()
-            .filter(|(name, _value)| name == key)
-            .next_back()
+            .rfind(|(name, _value)| name == key)
             .map(|(_name, value)| value.clone())
     }
 
@@ -667,18 +538,8 @@ mod tests {
         );
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn finds_a_known_unix_binary() {
-        // `sh` exists on every supported Unix platform.
-        assert!(find_in_path("sh").is_some());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn misses_unknown_binary() {
-        assert!(find_in_path("definitely-not-a-real-cli-xyz").is_none());
-    }
+    // Executable discovery lives in `agents::executable` and is tested there;
+    // this module tests only what is Claude Code's own.
 
     // --- spawn description (Milestone 3) ------------------------------------
 
@@ -687,7 +548,6 @@ mod tests {
         use super::*;
         use crate::agents::{AgentAdapter, AgentError, SpawnRequest};
         use crate::persistence::test_support::TempDir;
-        use std::ffi::OsString;
 
         fn request(project: &Path, config: &Path, provider: ResolvedProvider) -> SpawnRequest {
             SpawnRequest {
@@ -865,6 +725,11 @@ mod tests {
             );
         }
 
+        /// Positive control for the shared builder: this adapter's spawn
+        /// description really does go through `agents::spawn`, so the checks
+        /// tested there (project folder, access probe, config directory) guard
+        /// Claude Code sessions too. Everything else about the *shared* half is
+        /// tested once, in `agents::spawn`.
         #[test]
         fn a_deleted_project_folder_fails_the_spawn_description() {
             let config_root = TempDir::new("agent-config");
@@ -878,137 +743,6 @@ mod tests {
             .expect_err("a missing project folder must fail");
             assert!(matches!(error, AgentError::ProjectDirectoryMissing { .. }));
             assert!(error.to_string().contains("does-not-exist"));
-        }
-
-        #[test]
-        fn a_project_path_that_is_a_file_fails_the_spawn_description() {
-            let project = TempDir::new("agent-project");
-            let config_root = TempDir::new("agent-config");
-            let file = project.join("a-file.txt");
-            std::fs::write(&file, b"not a folder").unwrap();
-
-            let error = ClaudeCodeAdapter::build_spawn(
-                Path::new("claude"),
-                &[],
-                &request(&file, &config_root.join("session-1"), resolved_with_extras(Vec::new())),
-            )
-            .expect_err("a file is not a project folder");
-            assert!(matches!(error, AgentError::ProjectDirectoryInvalid { .. }));
-        }
-
-        #[test]
-        fn a_config_directory_that_cannot_be_created_fails_the_spawn_description() {
-            let project = TempDir::new("agent-project");
-            let blocker = TempDir::new("agent-config-blocker");
-            // A *file* where the config directory's parent needs to be.
-            let blocked_parent = blocker.join("blocked");
-            std::fs::write(&blocked_parent, b"not a folder").unwrap();
-
-            let error = ClaudeCodeAdapter::build_spawn(
-                Path::new("claude"),
-                &[],
-                &request(
-                    project.path(),
-                    &blocked_parent.join("session-1"),
-                    resolved_with_extras(Vec::new()),
-                ),
-            )
-            .expect_err("an unusable config directory must fail");
-            assert!(matches!(error, AgentError::ConfigDirectory { .. }));
-            // No credential may appear in the message (spec section 17).
-            assert!(!error.to_string().contains("KEY_A"));
-        }
-
-        /// The access probe (spec section 16: "Permission errors", "Project
-        /// directory deleted").
-        ///
-        /// A readable folder - including an empty one - must never be refused:
-        /// the probe exists to turn an OS-level permission failure into a clear
-        /// message, not to add a new way for a valid project to be rejected.
-        #[test]
-        fn a_readable_project_folder_passes_the_access_probe() {
-            let empty = TempDir::new("agent-probe-empty");
-            assert!(
-                check_project_directory_access(empty.path()).is_ok(),
-                "an empty project folder is valid"
-            );
-
-            let populated = TempDir::new("agent-probe-populated");
-            std::fs::write(populated.join("main.rs"), b"fn main() {}").unwrap();
-            std::fs::create_dir_all(populated.join("src")).unwrap();
-            assert!(check_project_directory_access(populated.path()).is_ok());
-        }
-
-        /// The message a permission failure produces.
-        ///
-        /// The failing `read_dir` is the *same* call the probe makes, with the
-        /// error kind the operating system raises for an unreadable directory
-        /// (`EACCES`/`ERROR_ACCESS_DENIED` both map to `PermissionDenied`), so
-        /// what is asserted here is the production mapping the user reads.
-        #[test]
-        fn a_project_folder_that_cannot_be_opened_reports_an_actionable_message() {
-            let path = Path::new("C:\\Work\\locked-project");
-            let denied =
-                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access is denied.");
-            let error = project_directory_access_error(path, &denied);
-
-            assert!(matches!(
-                error,
-                AgentError::ProjectDirectoryNotAccessible { .. }
-            ));
-            let message = error.to_string();
-            assert!(
-                message.contains("C:\\Work\\locked-project"),
-                "the message must name the folder: {message}"
-            );
-            assert!(
-                message.contains("permission"),
-                "the message must say what to check: {message}"
-            );
-            assert!(
-                message.contains("Access is denied."),
-                "the platform detail must be kept: {message}"
-            );
-            // The platform half is the only free text in the message, and it
-            // comes from the file system - never from a session's environment.
-            assert!(!message.contains("KEY_A"), "leaked: {message}");
-        }
-
-        /// A probe failure that is not a permission problem (a device error, a
-        /// folder on a disconnected share) is reported the same specific way
-        /// rather than being mislabelled as an invalid path.
-        #[test]
-        fn a_project_folder_that_fails_for_another_reason_is_reported_as_well() {
-            let path = Path::new("Z:\\work\\disconnected");
-            let device = std::io::Error::new(std::io::ErrorKind::NotConnected, "device not ready");
-            let error = project_directory_access_error(path, &device);
-
-            assert!(matches!(
-                error,
-                AgentError::ProjectDirectoryNotAccessible { .. }
-            ));
-            assert!(error.to_string().contains("device not ready"));
-            assert!(!error.to_string().contains("KEY_A"));
-        }
-
-        /// The probe is wired into the spawn description (positive control), so
-        /// a folder it refuses never reaches the PTY: the user's message stays
-        /// about the folder instead of about a failed process creation.
-        #[test]
-        fn the_spawn_description_calls_the_access_probe_before_returning() {
-            let project = TempDir::new("agent-probe-spawn");
-            let config_root = TempDir::new("agent-config");
-            assert!(check_project_directory_access(project.path()).is_ok());
-            assert!(ClaudeCodeAdapter::build_spawn(
-                Path::new("claude"),
-                &[],
-                &request(
-                    project.path(),
-                    &config_root.join("session-1"),
-                    resolved_with_extras(Vec::new()),
-                ),
-            )
-            .is_ok());
         }
 
         #[test]
@@ -1035,59 +769,6 @@ mod tests {
                 spawn.environment_value(ENV_BASE_URL),
                 Some("https://provider-a.example.com")
             );
-        }
-
-        #[test]
-        fn executable_discovery_searches_the_given_path_value() {
-            // Executable discovery without touching the test process's PATH.
-            let directory = TempDir::new("agent-path");
-            let name = if cfg!(windows) {
-                "claude.cmd"
-            } else {
-                "claude"
-            };
-            let candidate = directory.join(name);
-            std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
-            }
-
-            let path_var = OsString::from(directory.path().as_os_str());
-            assert_eq!(find_in_path_with(&path_var, "claude"), Some(candidate));
-            assert_eq!(find_in_path_with(&path_var, "definitely-not-a-real-cli"), None);
-
-            // A non-executable file on Unix must not be treated as the CLI.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                assert_eq!(find_in_path_with(&path_var, "claude"), None);
-            }
-        }
-
-        #[test]
-        #[cfg(windows)]
-        fn windows_discovery_prefers_a_spawnable_entry_point_over_the_bare_script() {
-            // npm's global install lays down `claude` (a POSIX shell script),
-            // `claude.cmd` and `claude.ps1`. Only the `.cmd` can be launched by
-            // `CreateProcessW`, so discovery must not return the bare script.
-            let directory = TempDir::new("agent-path-windows");
-            let script = directory.join("claude");
-            let shim = directory.join("claude.cmd");
-            std::fs::write(&script, b"#!/bin/sh\nexec node cli.js \"$@\"\n").unwrap();
-            std::fs::write(&shim, b"@echo off\r\nnode cli.js %*\r\n").unwrap();
-
-            let path_var = OsString::from(directory.path().as_os_str());
-            assert_eq!(find_in_path_with(&path_var, "claude"), Some(shim));
-
-            // A real .exe still wins over a .cmd shim.
-            let executable = directory.join("claude.exe");
-            std::fs::write(&executable, b"MZ").unwrap();
-            assert_eq!(find_in_path_with(&path_var, "claude"), Some(executable));
         }
 
         #[test]

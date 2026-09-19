@@ -121,9 +121,10 @@ export default function ProvidersPanel() {
           {providersLoaded && providers.length === 0 && editor === null ? (
             <div className="provider-empty">
               <p className="muted">
-                No providers configured yet. Add a provider profile to give
-                Claude Code an API endpoint, a model, and a stored key - the key
-                is sent to sessions as a bearer token, not as an API-key header.
+                No providers configured yet. Add a provider profile to give a
+                workspace's agent an API endpoint, a model and a stored key - the
+                key is sent to the session as that agent's credential variable,
+                not as provider metadata.
               </p>
               <button
                 type="button"

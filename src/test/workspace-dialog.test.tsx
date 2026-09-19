@@ -18,7 +18,15 @@ import App from "../App";
 import WorkspaceDialog from "../components/WorkspaceDialog";
 import { useAppStore } from "../stores/useAppStore";
 import type { Workspace, WorkspaceInput } from "../types";
-import { makeProvider, makeWorkspace, resetAppStore, setupUser } from "./fixtures";
+import {
+  makeAgent,
+  makeAgents,
+  makeProvider,
+  makeWorkspace,
+  resetAppStore,
+  seedAgents,
+  setupUser,
+} from "./fixtures";
 import {
   dialogOpenMock,
   invokeMock,
@@ -69,6 +77,11 @@ const pathField = () => screen.getByLabelText(/^project folder/i);
 const modelField = () => screen.getByLabelText(/^model/i);
 const providerSelect = () =>
   screen.getByRole("combobox", { name: /^provider/i });
+const agentSelect = () => screen.getByRole("combobox", { name: /^agent/i });
+const agentOptionLabels = () =>
+  within(agentSelect())
+    .getAllByRole("option")
+    .map((option) => option.textContent);
 const submitButton = (label: string | RegExp = /create workspace|save changes/i) =>
   screen.getByRole("button", { name: label });
 
@@ -175,6 +188,97 @@ describe("WorkspaceDialog: provider selection drives the model", () => {
   });
 });
 
+describe("WorkspaceDialog: agent selection", () => {
+  it("offers every agent the backend reports and submits the chosen one", async () => {
+    seedAgents();
+    const user = setupUser();
+    const { onSubmit } = renderDialog();
+
+    expect(agentOptionLabels()).toEqual(["Claude Code", "Codex"]);
+
+    await user.selectOptions(agentSelect(), "codex");
+    await user.type(nameField(), "Delta");
+    await user.type(pathField(), "D:\\Projects\\delta");
+    await user.click(submitButton());
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "codex" }),
+      ),
+    );
+  });
+
+  it("says when the chosen agent is not installed, and still lets the workspace be saved", async () => {
+    seedAgents([
+      makeAgent(),
+      makeAgent({
+        id: "codex",
+        name: "Codex",
+        installed: false,
+        executablePath: null,
+      }),
+    ]);
+    const user = setupUser();
+    const { onSubmit } = renderDialog();
+
+    // Nothing is claimed before a choice is made: the default agent is installed.
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await user.selectOptions(agentSelect(), "codex");
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /was not found on this machine's PATH/i,
+    );
+    // A workspace is a declaration: installing the CLI later must not have to be
+    // preceded by retyping it, so the save stays available.
+    expect(submitButton()).toBeEnabled();
+
+    await user.type(nameField(), "Delta");
+    await user.type(pathField(), "D:\\Projects\\delta");
+    await user.click(submitButton());
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "codex" }),
+      ),
+    );
+  });
+
+  it("keeps an unknown agent selected rather than silently switching the workspace to another", () => {
+    seedAgents();
+    renderDialog({ workspace: makeWorkspace({ agentId: "gemini" }) });
+
+    expect(agentSelect()).toHaveValue("gemini");
+    expect(agentOptionLabels()).toEqual([
+      "Claude Code",
+      "Codex",
+      "gemini (not in this build)",
+    ]);
+  });
+
+  it("falls back to the built-in names when the list cannot be read", async () => {
+    stubCommands({
+      list_agents: () => {
+        throw "no agent discovery in this build";
+      },
+    });
+    renderDialog();
+
+    // The form still names both agents, so it is usable with no backend answer.
+    await waitFor(() => expect(agentOptionLabels()).toHaveLength(2));
+    expect(agentSelect()).toHaveValue("claude-code");
+  });
+
+  it("asks the backend for the list itself, so the dialog does not depend on startup order", async () => {
+    stubCommands({ list_agents: () => makeAgents() });
+    renderDialog();
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("list_agents", undefined),
+    );
+  });
+});
+
 describe("WorkspaceDialog: edit mode", () => {
   it("prefills the workspace being edited, including its model override", () => {
     renderDialog({
@@ -243,6 +347,7 @@ describe("WorkspaceDialog: end-to-end through the shell", () => {
     let rows: Workspace[] = [];
     stubCommands({
       list_workspaces: () => rows,
+      list_agents: () => makeAgents(),
       load_workspace_layout: () => ({
         openWorkspaceIds: [],
         activeWorkspaceId: null,
