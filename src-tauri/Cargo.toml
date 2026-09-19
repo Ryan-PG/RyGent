@@ -1,6 +1,6 @@
 [package]
 name = "ai-workspace"
-version = "0.1.0"
+version = "1.1.1"
 description = "AI Coding Workspace - an isolated desktop workspace for running AI coding agents"
 authors = ["Ryan Heida"]
 edition = "2021"
