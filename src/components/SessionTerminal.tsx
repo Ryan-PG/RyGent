@@ -53,12 +53,17 @@ import TerminalContextMenu, {
   type ContextMenuEntry,
 } from "./TerminalContextMenu";
 import { copyText, readClipboardText } from "../services/clipboard";
+import type { ResolvedTheme } from "../types";
 import "@xterm/xterm/css/xterm.css";
 
 /**
- * Tokyo-night-ish palette copied from the `:root` custom properties in
- * `styles.css`. Duplicated as literals on purpose: xterm paints to a canvas and
- * cannot resolve CSS variables.
+ * xterm palettes, one per resolved theme (spec section 12, "Appearance").
+ *
+ * Duplicated as literals on purpose: xterm paints to a canvas and cannot
+ * resolve CSS variables, so these are the same colours `styles.css` puts in its
+ * theme blocks. **They must be kept in step with the `--terminal-*` and base
+ * tokens there** - a mismatch is visible as a seam between the terminal canvas
+ * and the panel behind it.
  *
  * The three `scrollbarSlider*` entries are the same duplication for xterm 6's
  * own overlay scrollbar, which is themed from here (it injects a `<style>` rule
@@ -66,44 +71,67 @@ import "@xterm/xterm/css/xterm.css";
  * stylesheet. `scrollbarSliderBackground` is `--border-strong`, hover is
  * `--gray`/`--text-faint` and the drag state is `--text-dim`.
  */
-const TERMINAL_THEME: ITheme = {
-  background: "#1a1b26",
-  foreground: "#c0caf5",
-  cursor: "#7aa2f7",
-  cursorAccent: "#1a1b26",
-  selectionBackground: "#3b4261",
-  scrollbarSliderBackground: "#3b4261",
-  scrollbarSliderHoverBackground: "#565f89",
-  scrollbarSliderActiveBackground: "#7982a9",
-  black: "#16161e",
-  red: "#f7768e",
-  green: "#9ece6a",
-  yellow: "#e0af68",
-  blue: "#7aa2f7",
-  magenta: "#bb9af7",
-  cyan: "#7dcfff",
-  white: "#c0caf5",
-  brightBlack: "#565f89",
-  brightRed: "#f7768e",
-  brightGreen: "#9ece6a",
-  brightYellow: "#e0af68",
-  brightBlue: "#7aa2f7",
-  brightMagenta: "#bb9af7",
-  brightCyan: "#7dcfff",
-  brightWhite: "#c0caf5",
+const TERMINAL_THEMES: Record<ResolvedTheme, ITheme> = {
+  dark: {
+    background: "#1a1b26",
+    foreground: "#c0caf5",
+    cursor: "#7aa2f7",
+    cursorAccent: "#1a1b26",
+    selectionBackground: "#3b4261",
+    scrollbarSliderBackground: "#3b4261",
+    scrollbarSliderHoverBackground: "#565f89",
+    scrollbarSliderActiveBackground: "#7982a9",
+    black: "#16161e",
+    red: "#f7768e",
+    green: "#9ece6a",
+    yellow: "#e0af68",
+    blue: "#7aa2f7",
+    magenta: "#bb9af7",
+    cyan: "#7dcfff",
+    white: "#c0caf5",
+    brightBlack: "#565f89",
+    brightRed: "#f7768e",
+    brightGreen: "#9ece6a",
+    brightYellow: "#e0af68",
+    brightBlue: "#7aa2f7",
+    brightMagenta: "#bb9af7",
+    brightCyan: "#7dcfff",
+    brightWhite: "#c0caf5",
+  },
+  // Tokyo Night "Day". The ANSI slots are the Day equivalents of the Storm
+  // ones above, not a straight reuse: an agent that colours its diff green must
+  // stay readable on a light background, and Storm's bright green does not.
+  light: {
+    background: "#e1e2e7",
+    foreground: "#3760bf",
+    cursor: "#2e7de9",
+    cursorAccent: "#e1e2e7",
+    selectionBackground: "#b7b9d0",
+    scrollbarSliderBackground: "#a8adc4",
+    scrollbarSliderHoverBackground: "#848cb5",
+    scrollbarSliderActiveBackground: "#5c6a9c",
+    black: "#3760bf",
+    red: "#f52a65",
+    green: "#587539",
+    yellow: "#8c6c3e",
+    blue: "#2e7de9",
+    magenta: "#9854f1",
+    cyan: "#007197",
+    white: "#6172b0",
+    brightBlack: "#a1a6c5",
+    brightRed: "#f52a65",
+    brightGreen: "#587539",
+    brightYellow: "#8c6c3e",
+    brightBlue: "#2e7de9",
+    brightMagenta: "#9854f1",
+    brightCyan: "#007197",
+    brightWhite: "#3760bf",
+  },
 };
 
 /** Matches `--font-mono` so the terminal does not look bolted on. */
 const TERMINAL_FONT_FAMILY =
   '"Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", "DejaVu Sans Mono", monospace';
-
-/**
- * Lines of scrollback kept per terminal.
- *
- * Generous on purpose: a coding agent's transcript is long, and the wheel plus
- * `Shift+PageUp`/`Ctrl+Shift+Home` are the only way back through it.
- */
-const TERMINAL_SCROLLBACK = 10000;
 
 /** Imperative surface a parent drives the terminal with. */
 export interface SessionTerminalHandle {
@@ -157,6 +185,23 @@ interface Props {
   onReady?: (handle: SessionTerminalHandle) => void;
   /** Extra class for layout (the viewport sizing lives in `styles.css`). */
   className?: string;
+
+  // --- Appearance, from the Settings tab (spec section 12) -------------------
+  //
+  // Every one of these is optional with the value the terminal shipped with, so
+  // a caller that does not care (a test, or the mock-mode pane) gets exactly the
+  // previous behaviour. `SessionView` supplies them from the store.
+
+  /** Resolved palette to paint with. */
+  theme?: ResolvedTheme;
+  /** Font size in px. */
+  fontSize?: number;
+  /** Lines of scrollback kept per terminal. */
+  scrollback?: number;
+  /** Whether the cursor blinks. */
+  cursorBlink?: boolean;
+  /** Copy the selection as soon as it is made. */
+  copyOnSelect?: boolean;
 }
 
 /** Where the pointer opened the context menu, in viewport coordinates. */
@@ -166,7 +211,17 @@ interface MenuPosition {
 }
 
 function SessionTerminal(
-  { onData, onResize, onReady, className }: Props,
+  {
+    onData,
+    onResize,
+    onReady,
+    className,
+    theme = "dark",
+    fontSize = 12,
+    scrollback = 10_000,
+    cursorBlink = true,
+    copyOnSelect = false,
+  }: Props,
   ref: Ref<SessionTerminalHandle>,
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -351,15 +406,15 @@ function SessionTerminal(
     }
 
     const terminal = new Terminal({
-      theme: TERMINAL_THEME,
+      theme: TERMINAL_THEMES[theme],
       fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 12,
+      fontSize,
       lineHeight: 1.2,
       // The PTY sends \r\n itself; translating them again would double-space
       // every line of a full-screen TUI.
       convertEol: false,
-      scrollback: TERMINAL_SCROLLBACK,
-      cursorBlink: true,
+      scrollback,
+      cursorBlink,
       // Keeps the view pinned to the bottom while the agent streams, which is
       // what an interactive CLI session expects.
       scrollOnUserInput: true,
@@ -430,6 +485,67 @@ function SessionTerminal(
     // Mount-only: the terminal instance must outlive every re-render, which is
     // also why `safeFit` and the callbacks are read through refs.
   }, []);
+
+  /**
+   * Apply appearance changes to the live terminal.
+   *
+   * Separate from the mount effect above because the instance must never be
+   * re-created: a Settings change has to reach the terminal that is already on
+   * screen, keeping its scrollback and its running PTY. xterm exposes these as
+   * mutable options, so this assigns them rather than rebuilding anything.
+   *
+   * The `safeFit()` is not optional - a different font size changes how many
+   * cells fit in the same box, and without a re-fit the terminal would keep
+   * reporting its old `cols`/`rows` to the PTY while rendering at the new size,
+   * so a TUI would wrap in the wrong place.
+   *
+   * Runs on mount as well (after the effect above, so the terminal exists),
+   * where it re-applies the same values and costs one measurement.
+   */
+  useEffect(() => {
+    const terminal = termRef.current;
+    if (!terminal) {
+      return;
+    }
+    terminal.options.theme = TERMINAL_THEMES[theme];
+    terminal.options.fontSize = fontSize;
+    terminal.options.scrollback = scrollback;
+    terminal.options.cursorBlink = cursorBlink;
+    safeFit();
+  }, [theme, fontSize, scrollback, cursorBlink]);
+
+  /**
+   * Copy-on-select (spec section 12, "Copy the selection as soon as it is made").
+   *
+   * xterm reports every selection change, including each step of a drag, so a
+   * selection made by dragging is copied repeatedly as it grows. That is the
+   * behaviour the setting asks for and what other terminals with this option do;
+   * the duplicate guard below only suppresses the no-op re-reports (a click that
+   * clears a selection, or a change that leaves the text identical), which are
+   * the ones that would otherwise write the clipboard for nothing.
+   */
+  const lastAutoCopiedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const terminal = termRef.current;
+    if (!terminal || !copyOnSelect) {
+      return;
+    }
+    const subscription = terminal.onSelectionChange(() => {
+      const selection = terminal.getSelection();
+      if (selection.length === 0) {
+        // Selection cleared; the next non-empty one is a fresh copy even if it
+        // happens to match the last one.
+        lastAutoCopiedRef.current = null;
+        return;
+      }
+      if (selection === lastAutoCopiedRef.current) {
+        return;
+      }
+      lastAutoCopiedRef.current = selection;
+      void copyAndReport(selection);
+    });
+    return () => subscription.dispose();
+  }, [copyOnSelect, copyAndReport]);
 
   /**
    * Right-click: our menu, never the webview's.

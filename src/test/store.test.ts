@@ -6,9 +6,18 @@
  * normalization and the store's reducers - is the real code.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../stores/useAppStore";
-import { makeWorkspace, resetAppStore, seedSession, seedWorkspaces } from "./fixtures";
+import { preferences } from "../settings/preferences";
+import { resolveTheme } from "../settings/theme";
+import {
+  makeWorkspace,
+  resetAppStore,
+  seedPreference,
+  seedPreferences,
+  seedSession,
+  seedWorkspaces,
+} from "./fixtures";
 import { invokeMock, resetTauriMock, stubCommands, tauriRuntime } from "./mock-tauri";
 
 vi.mock("@tauri-apps/api/core", async () =>
@@ -21,7 +30,13 @@ const WORKSPACES = [
   makeWorkspace({ id: "ws-3", name: "Gamma", projectPath: "D:\\Projects\\gamma" }),
 ];
 
-/** Stubs every command a successful app start issues. */
+/**
+ * Stubs every command a successful app start issues.
+ *
+ * `list_ui_preferences` belongs here because `initializeWorkspaces` awaits the
+ * preferences first - the restore-tabs preference decides whether the stored
+ * layout is used at all.
+ */
 function stubStartup(
   workspaces = WORKSPACES,
   layout: { openWorkspaceIds: string[]; activeWorkspaceId: string | null } = {
@@ -30,6 +45,7 @@ function stubStartup(
   },
 ): void {
   stubCommands({
+    list_ui_preferences: () => ({}),
     list_workspaces: () => workspaces,
     load_workspace_layout: () => layout,
     save_workspace_layout: (args) => args?.layout,
@@ -116,16 +132,29 @@ describe("app store: loading workspaces", () => {
     });
   });
 
-  it("loads only once, so StrictMode's double invoke cannot refetch", () => {
+  it("loads only once, so StrictMode's double invoke cannot refetch", async () => {
     stubStartup();
 
+    // Both calls are made before either finishes, which is the whole point: the
+    // second is turned away by the in-flight guard, not by winning a race.
     useAppStore.getState().ensureWorkspacesLoaded();
     useAppStore.getState().ensureWorkspacesLoaded();
 
-    const listCalls = invokeMock.mock.calls.filter(
-      ([command]) => command === "list_workspaces",
-    );
-    expect(listCalls).toHaveLength(1);
+    // `workspacesLoading` is set before the first `await`, so the guard itself is
+    // settled here - but the fetch is now issued several awaits in (preferences
+    // are read first), so the call count is not observable until they drain.
+    await vi.waitFor(() => {
+      const listCalls = invokeMock.mock.calls.filter(
+        ([command]) => command === "list_workspaces",
+      );
+      expect(listCalls).toHaveLength(1);
+    });
+    // Preferences were fetched once by the same guard, not once per caller.
+    expect(
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "list_ui_preferences",
+      ),
+    ).toHaveLength(1);
   });
 
   it("reports a plain-browser start as a notice, not as an error", async () => {
@@ -169,6 +198,8 @@ describe("app store: loading workspaces", () => {
 
   it("surfaces a backend failure as a message (Rust rejects with a plain string)", async () => {
     stubCommands({
+      // Stubbed so the only failure in play is the one under test.
+      list_ui_preferences: () => ({}),
       list_workspaces: () => {
         throw "database is locked";
       },
@@ -401,5 +432,264 @@ describe("app store: workspace lifecycle", () => {
     const state = useAppStore.getState();
     expect(state.workspaces.map((workspace) => workspace.id)).toEqual(["ws-2"]);
     expect(state.tabs.map((tab) => tab.id)).toEqual(["ws-2"]);
+  });
+});
+
+describe("app store: preferences", () => {
+  afterEach(() => {
+    // The theme is applied to the real document, which outlives the test.
+    delete document.documentElement.dataset.theme;
+    localStorage.clear();
+  });
+
+  it("loads the stored map once, and resolves the theme from it", async () => {
+    stubCommands({
+      list_ui_preferences: () => ({ "appearance.theme": "light" }),
+    });
+
+    await useAppStore.getState().initializePreferences();
+
+    const state = useAppStore.getState();
+    expect(state.preferences).toEqual({ "appearance.theme": "light" });
+    expect(state.preferencesLoaded).toBe(true);
+    expect(state.preferencesError).toBeNull();
+    expect(state.resolvedTheme).toBe("light");
+    // A theme change is also a repaint of the document, not just a store value.
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("follows the OS while the stored mode is system", async () => {
+    // The harness answers "no" to every media query, so system means light.
+    stubCommands({ list_ui_preferences: () => ({}) });
+
+    await useAppStore.getState().initializePreferences();
+
+    expect(useAppStore.getState().resolvedTheme).toBe(
+      resolveTheme("system", false),
+    );
+  });
+
+  it("only loads once, so StrictMode's double invoke cannot refetch", async () => {
+    stubCommands({ list_ui_preferences: () => ({}) });
+
+    useAppStore.getState().ensurePreferencesLoaded();
+    useAppStore.getState().ensurePreferencesLoaded();
+
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter(
+          ([command]) => command === "list_ui_preferences",
+        ),
+      ).toHaveLength(1);
+    });
+  });
+
+  it("falls back to the defaults and reports the failure when the read fails", async () => {
+    stubCommands({
+      list_ui_preferences: () => {
+        throw "database is locked";
+      },
+    });
+
+    await useAppStore.getState().initializePreferences();
+
+    const state = useAppStore.getState();
+    // Loaded-and-empty, so the panel shows the defaults rather than a spinner.
+    expect(state.preferences).toEqual({});
+    expect(state.preferencesLoaded).toBe(true);
+    expect(state.preferencesError).toBe("database is locked");
+    expect(state.resolvedTheme).toBe(resolveTheme("system", false));
+  });
+
+  it("writes a preference, updating the UI before the backend answers", async () => {
+    stubCommands({ set_ui_preference: () => null });
+
+    const ok = await useAppStore
+      .getState()
+      .setPreference("terminal.fontSize", "18");
+
+    expect(ok).toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_ui_preference", {
+      key: "terminal.fontSize",
+      value: "18",
+    });
+    expect(useAppStore.getState().preferences["terminal.fontSize"]).toBe("18");
+  });
+
+  it("resets by writing the empty value, and drops the key locally", async () => {
+    stubCommands({ set_ui_preference: () => null });
+    seedPreferences({ "terminal.fontSize": "18" });
+
+    await useAppStore.getState().resetPreference("terminal.fontSize");
+
+    // An empty value is how the backend deletes the row, so "unset" and "set to
+    // empty" stay the same thing on both sides (spec section 14).
+    expect(invokeMock).toHaveBeenCalledWith("set_ui_preference", {
+      key: "terminal.fontSize",
+      value: "",
+    });
+    expect(useAppStore.getState().preferences).toEqual({});
+    expect(preferences.terminalFontSize.get(useAppStore.getState().preferences)).toBe(
+      12,
+    );
+  });
+
+  it("rolls a failed write back and reports why", async () => {
+    stubCommands({
+      set_ui_preference: () => {
+        throw "database is locked";
+      },
+    });
+    seedPreferences({ "terminal.fontSize": "18" });
+
+    const ok = await useAppStore
+      .getState()
+      .setPreference("terminal.fontSize", "20");
+
+    expect(ok).toBe(false);
+    const state = useAppStore.getState();
+    // A control must never show a value that is not stored.
+    expect(state.preferences["terminal.fontSize"]).toBe("18");
+    expect(state.preferencesError).toBe("database is locked");
+  });
+
+  it("keeps a change in memory without persisting it when there is no backend", async () => {
+    tauriRuntime.available = false;
+
+    const ok = await useAppStore
+      .getState()
+      .setPreference("appearance.theme", "dark");
+
+    // Nothing persists in a plain browser, but the session behaves as if it did,
+    // so the panel stays usable for inspecting the layout.
+    expect(ok).toBe(true);
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().resolvedTheme).toBe("dark");
+  });
+});
+
+describe("app store: the restore-tabs preference", () => {
+  it("reopens the remembered tabs by default", async () => {
+    stubStartup(WORKSPACES, {
+      openWorkspaceIds: ["ws-1", "ws-2"],
+      activeWorkspaceId: "ws-1",
+    });
+
+    await useAppStore.getState().initializeWorkspaces();
+
+    expect(useAppStore.getState().tabs.map((tab) => tab.id)).toEqual([
+      "ws-1",
+      "ws-2",
+    ]);
+  });
+
+  it("starts on an empty shell when the user turned restoring off", async () => {
+    stubStartup(WORKSPACES, {
+      openWorkspaceIds: ["ws-1", "ws-2"],
+      activeWorkspaceId: "ws-1",
+    });
+    seedPreference(preferences.sessionsRestoreTabs, false);
+
+    await useAppStore.getState().initializeWorkspaces();
+
+    const state = useAppStore.getState();
+    expect(state.tabs).toEqual([]);
+    expect(state.activeTabId).toBeNull();
+    // The workspaces themselves are always loaded - the sidebar is not a tab.
+    expect(state.workspaces.map((workspace) => workspace.id)).toEqual([
+      "ws-1",
+      "ws-2",
+      "ws-3",
+    ]);
+    // The stored layout *was* read, so the tab set may keep being remembered:
+    // with an empty layout stored, turning the setting back on would otherwise
+    // restore nothing at all.
+    expect(state.layoutRestored).toBe(true);
+  });
+});
+
+describe("app store: closing a tab whose session is running", () => {
+  it("closes straight away when nothing is running in that tab", () => {
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "created" });
+
+    useAppStore.getState().requestCloseTab("ws-1");
+
+    expect(useAppStore.getState().confirmCloseTabId).toBeNull();
+    expect(useAppStore.getState().tabs.map((tab) => tab.id)).toEqual(["ws-2"]);
+  });
+
+  it("parks the close and asks first when the agent is live", () => {
+    stubCommands({ stop_session: () => null });
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "running" });
+
+    useAppStore.getState().requestCloseTab("ws-1");
+
+    const state = useAppStore.getState();
+    expect(state.confirmCloseTabId).toBe("ws-1");
+    // Nothing has happened yet: the session is untouched and the tab is open.
+    expect(state.tabs.map((tab) => tab.id)).toEqual(["ws-1", "ws-2"]);
+    expect(invokeMock).not.toHaveBeenCalledWith("stop_session", {
+      sessionId: "session-1",
+    });
+  });
+
+  it("closes the tab, and stops its session, once the prompt is confirmed", () => {
+    stubCommands({ stop_session: () => null });
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "running" });
+
+    useAppStore.getState().requestCloseTab("ws-1");
+    useAppStore.getState().confirmCloseTab();
+
+    const state = useAppStore.getState();
+    expect(state.confirmCloseTabId).toBeNull();
+    expect(state.tabs.map((tab) => tab.id)).toEqual(["ws-2"]);
+    expect(invokeMock).toHaveBeenCalledWith("stop_session", {
+      sessionId: "session-1",
+    });
+  });
+
+  it("leaves everything alone when the prompt is dismissed", () => {
+    stubCommands({ stop_session: () => null });
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "running" });
+
+    useAppStore.getState().requestCloseTab("ws-1");
+    useAppStore.getState().cancelCloseTab();
+
+    const state = useAppStore.getState();
+    expect(state.confirmCloseTabId).toBeNull();
+    expect(state.tabs.map((tab) => tab.id)).toEqual(["ws-1", "ws-2"]);
+    expect(state.sessions["ws-1"]?.id).toBe("session-1");
+  });
+
+  it("asks about nothing once the tab is closed some other way", () => {
+    stubCommands({ stop_session: () => null });
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "running" });
+
+    useAppStore.getState().requestCloseTab("ws-1");
+    // A delete in another window, say. The prompt must not outlive its tab.
+    useAppStore.getState().closeTab("ws-1");
+
+    expect(useAppStore.getState().confirmCloseTabId).toBeNull();
+  });
+
+  it("closes a running session without asking when the preference is off", () => {
+    stubCommands({ stop_session: () => null });
+    seedWorkspaces(WORKSPACES, ["ws-1", "ws-2"]);
+    seedSession("ws-1", { id: "session-1", status: "running" });
+    seedPreference(preferences.sessionsConfirmCloseRunning, false);
+
+    useAppStore.getState().requestCloseTab("ws-1");
+
+    const state = useAppStore.getState();
+    expect(state.confirmCloseTabId).toBeNull();
+    expect(state.tabs.map((tab) => tab.id)).toEqual(["ws-2"]);
+    expect(invokeMock).toHaveBeenCalledWith("stop_session", {
+      sessionId: "session-1",
+    });
   });
 });

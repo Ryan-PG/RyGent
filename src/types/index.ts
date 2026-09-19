@@ -175,3 +175,51 @@ export type SecretStatus = boolean | null;
 
 /** Availability of the Rust backend behind `invoke`. */
 export type BackendStatus = "connecting" | "ready" | "unavailable" | "error";
+
+/**
+ * Which palette the user picked (spec section 12, "Appearance").
+ *
+ * `system` is a real third choice, not "unset": it follows the OS through
+ * `prefers-color-scheme` and keeps following it, so a user whose machine flips
+ * to light in the evening gets a light app without touching Settings again.
+ */
+export type ThemeMode = "dark" | "light" | "system";
+
+/**
+ * The palette actually painted.
+ *
+ * `ThemeMode` minus `system`, which is the point of the distinction: only this
+ * type reaches the stylesheet and the xterm theme.
+ */
+export type ResolvedTheme = "dark" | "light";
+
+/**
+ * Every stored UI preference, as the backend returns it.
+ *
+ * Values are **opaque strings** (`get_ui_preference` in the Rust core stores
+ * text and never interprets it), so nothing outside `settings/preferences.ts`
+ * may read a raw value - that module owns the key names, the defaults and the
+ * parsing.
+ */
+export type UiPreferences = Record<string, string>;
+
+/**
+ * Read-only application information for the Settings tab's About section.
+ *
+ * Mirrors `crate::commands::settings::AppInfo`, which serializes camelCase -
+ * the Rust suite pins these exact field names.
+ */
+export interface AppInfo {
+  /** Application version from the bundle metadata. */
+  version: string;
+  /** Directory holding the database and per-session configuration. */
+  dataDirectory: string;
+  /** The SQLite database file. */
+  databasePath: string;
+  /** Database file size in bytes; `null` when the file does not exist yet. */
+  databaseSizeBytes: number | null;
+  /** Resolved Claude Code executable; `null` when it is not installed. */
+  claudeCodePath: string | null;
+  /** Schema version the database is currently migrated to. */
+  schemaVersion: number;
+}

@@ -1,20 +1,26 @@
 import { create } from "zustand";
 import type {
+  AppInfo,
   BackendStatus,
   ProviderInput,
   ProviderProfile,
   ProviderTestResult,
+  ResolvedTheme,
   SecretStatus,
   SessionStatus,
   TerminalSession,
   TerminalSessionStatus,
+  UiPreferences,
   Workspace,
   WorkspaceInput,
   WorkspaceTab,
 } from "../types";
 import { providersApi } from "../services/providers";
 import { workspacesApi } from "../services/workspaces";
+import { settingsApi } from "../services/settings";
 import { isSessionStatus, sessionsApi } from "../services/sessions";
+import { preferences } from "../settings/preferences";
+import { bootTheme, commitTheme } from "../settings/theme";
 import {
   errorMessage,
   isBackendAvailable,
@@ -130,6 +136,34 @@ function stopSessionQuietly(session: TerminalSession | undefined): void {
   }
 }
 
+/**
+ * Whether a session is alive enough that closing its tab would kill work.
+ *
+ * `starting` and `stopping` count: a process is being spawned or is on its way
+ * out, and both are states the user did not ask to interrupt by clicking a tab.
+ * `failed` does not - there is nothing left to lose.
+ */
+function sessionIsLive(session: TerminalSession | undefined): boolean {
+  return (
+    session?.status === "starting" ||
+    session?.status === "running" ||
+    session?.status === "stopping"
+  );
+}
+
+/**
+ * Resolve and paint the theme held in `prefs`.
+ *
+ * Called whenever the preference map is replaced - on load, on a change, and on
+ * a revert after a failed write - so the palette on screen always follows the
+ * stored value rather than the last thing the user clicked. Returns the resolved
+ * palette, which the caller stores: `SessionView` feeds it to xterm, and the
+ * terminal cannot read a CSS variable to find out for itself.
+ */
+function applyThemeFrom(prefs: UiPreferences): ResolvedTheme {
+  return commitTheme(preferences.appearanceTheme.get(prefs));
+}
+
 interface AppState {
   // --- Tab shell (Milestone 1, real data since Milestone 4) -----------------
   /** Open tabs, in the order they were opened. One per workspace. */
@@ -238,6 +272,62 @@ interface AppState {
     status: TerminalSessionStatus,
     exitCode: number | null,
   ) => void;
+
+  // --- Settings (spec section 12) ------------------------------------------
+  /**
+   * Every stored UI preference, as opaque strings.
+   *
+   * Read through `settings/preferences.ts` and never directly: the keys, the
+   * defaults and the parsing all live there, so a component cannot invent its
+   * own interpretation of a value.
+   */
+  preferences: UiPreferences;
+  /** Set once the first preference load attempt finished (successfully or not). */
+  preferencesLoaded: boolean;
+  preferencesLoading: boolean;
+  /** Preference load/save error, shown as a banner in the Settings panel. */
+  preferencesError: string | null;
+  /** Read-only About/Storage information; `null` until loaded. */
+  appInfo: AppInfo | null;
+  /**
+   * The palette currently painted, with `system` already resolved.
+   *
+   * State rather than a derivation, because two consumers must agree and only
+   * one of them can read CSS: the stylesheet follows the `data-theme` attribute,
+   * while the xterm canvas in `SessionView` needs the literal value. It is
+   * updated by every path that can change the theme, including an OS palette
+   * change while the mode is `system`.
+   */
+  resolvedTheme: ResolvedTheme;
+  /**
+   * The tab whose close is waiting for confirmation, or `null`.
+   *
+   * Held here rather than in `TabBar` because two components close tabs
+   * (`TabBar` and `WorkspacePanel`) and both must honour the same preference.
+   */
+  confirmCloseTabId: string | null;
+
+  /** Load every preference (spec section 12). */
+  initializePreferences: () => Promise<void>;
+  /** Load once (React StrictMode double-invoke safe). */
+  ensurePreferencesLoaded: () => void;
+  /** Store one preference; an empty `value` resets it to its default. */
+  setPreference: (key: string, value: string) => Promise<boolean>;
+  /** Reset one preference to its frontend default. */
+  resetPreference: (key: string) => Promise<boolean>;
+  /** Load the About/Storage section's read-only information. */
+  loadAppInfo: () => Promise<void>;
+  /** Re-resolve and repaint the theme (used when the OS palette changes). */
+  refreshTheme: () => void;
+  /**
+   * Close a tab, asking first when its session is live and
+   * `sessions.confirmCloseRunning` is on.
+   */
+  requestCloseTab: (id: string) => void;
+  /** Close the tab waiting for confirmation. */
+  confirmCloseTab: () => void;
+  /** Dismiss the close confirmation, leaving the tab open. */
+  cancelCloseTab: () => void;
 }
 
 /** Read the keyring "is a secret set" flag for every provider. */
@@ -293,7 +383,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     // stops its session (spec section 15) while leaving the workspace itself
     // intact (spec section 9).
     stopSessionQuietly(get().sessions[id]);
-    set((state) => closedTabState(state.tabs, state.activeTabId, state.sessions, id));
+    set((state) => ({
+      ...closedTabState(state.tabs, state.activeTabId, state.sessions, id),
+      // A pending confirmation for *this* tab is answered by the close itself,
+      // so the dialog cannot survive the thing it was asking about.
+      confirmCloseTabId:
+        state.confirmCloseTabId === id ? null : state.confirmCloseTabId,
+    }));
   },
 
   // --- Workspace management --------------------------------------------------
@@ -333,14 +429,27 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     set({ workspacesLoading: true, workspacesError: null });
     try {
+      // Preferences first: whether to reopen the remembered tab set is itself a
+      // preference, and it cannot be answered from an empty map. A failure here
+      // is already reported by `initializePreferences`; it must not stop the
+      // workspace list from loading, so the default (restore) applies instead.
+      if (!get().preferencesLoaded) {
+        await get().initializePreferences();
+      }
+      const restoreTabs = preferences.sessionsRestoreTabs.get(
+        get().preferences,
+      );
+
       const [workspaces, layout] = await Promise.all([
         workspacesApi.list(),
         workspacesApi.loadLayout(),
       ]);
 
       // Reopen the remembered tabs - those whose workspace still exists - and
-      // start nothing: sessions come back stopped (spec section 14).
-      const openTabs = layout.openWorkspaceIds
+      // start nothing: sessions come back stopped (spec section 14). With
+      // "restore tabs" off the layout is still read (so the store knows the
+      // read succeeded and may keep saving), but no tab is opened.
+      const openTabs = (restoreTabs ? layout.openWorkspaceIds : [])
         .map((id) => workspaces.find((workspace) => workspace.id === id))
         .filter((workspace): workspace is Workspace => workspace !== undefined)
         .map(tabFromWorkspace);
@@ -778,4 +887,144 @@ export const useAppStore = create<AppState>()((set, get) => ({
             : `agent exited with code ${exitCode}`,
       }),
     })),
+
+  // --- Settings --------------------------------------------------------------
+
+  // An empty map means "nothing stored", so every reader falls back to its
+  // default until the real values arrive. The theme is applied from the cached
+  // copy in `main.tsx` before React starts, so this initial state never decides
+  // what the first frame looks like.
+  preferences: {},
+  preferencesLoaded: false,
+  preferencesLoading: false,
+  preferencesError: null,
+  appInfo: null,
+  confirmCloseTabId: null,
+  // Seeded from the same function `main.tsx` painted with, so the terminal's
+  // first palette matches the window it is already sitting in.
+  resolvedTheme: bootTheme(),
+
+  initializePreferences: async () => {
+    if (!isBackendAvailable()) {
+      // Plain-browser dev: the stored values do not exist, so the defaults are
+      // the honest answer - and the Settings panel says why it cannot edit them.
+      set({
+        preferences: {},
+        preferencesLoaded: true,
+        preferencesLoading: false,
+        preferencesError: null,
+      });
+      return;
+    }
+
+    set({ preferencesLoading: true, preferencesError: null });
+    try {
+      const stored = await settingsApi.list();
+      set({
+        preferences: stored,
+        preferencesLoaded: true,
+        preferencesLoading: false,
+        preferencesError: null,
+        resolvedTheme: applyThemeFrom(stored),
+      });
+    } catch (error) {
+      // A failed read falls back to the defaults rather than leaving the app
+      // unstyled or unusable; the panel surfaces the failure as a banner.
+      set({
+        preferences: {},
+        preferencesLoaded: true,
+        preferencesLoading: false,
+        preferencesError: errorMessage(error),
+        backendStatus: isBackendUnavailableError(error)
+          ? "unavailable"
+          : get().backendStatus,
+        resolvedTheme: applyThemeFrom({}),
+      });
+    }
+  },
+
+  ensurePreferencesLoaded: () => {
+    const { preferencesLoaded, preferencesLoading } = get();
+    if (preferencesLoaded || preferencesLoading) {
+      return;
+    }
+    void get().initializePreferences();
+  },
+
+  setPreference: async (key, value) => {
+    const previous = get().preferences;
+    const next = { ...previous };
+    // The backend deletes the row for an empty value, so the local map drops the
+    // key too: "unset" and "set to empty" stay the same thing on both sides.
+    if (value === "") {
+      delete next[key];
+    } else {
+      next[key] = value;
+    }
+
+    // Optimistic: the control responds at once, and the write is confirmed (or
+    // rolled back) a moment later. The theme in particular has to apply
+    // immediately or clicking "Light" would appear to do nothing.
+    set({
+      preferences: next,
+      preferencesError: null,
+      resolvedTheme: applyThemeFrom(next),
+    });
+
+    if (!isBackendAvailable()) {
+      // Nothing persists in a plain browser, but the session behaves as if it
+      // did - the panel's controls stay usable for inspecting the layout.
+      return true;
+    }
+
+    try {
+      await settingsApi.set(key, value);
+      return true;
+    } catch (error) {
+      set({
+        preferences: previous,
+        preferencesError: errorMessage(error),
+        resolvedTheme: applyThemeFrom(previous),
+      });
+      return false;
+    }
+  },
+
+  resetPreference: (key) => get().setPreference(key, ""),
+
+  loadAppInfo: async () => {
+    if (!isBackendAvailable()) {
+      return;
+    }
+    try {
+      set({ appInfo: await settingsApi.appInfo() });
+    } catch (error) {
+      // Shares the panel's banner: a failed `app_info` is a Settings problem the
+      // user can act on (a broken database, usually), not a separate one.
+      set({ preferencesError: errorMessage(error) });
+    }
+  },
+
+  refreshTheme: () =>
+    set({ resolvedTheme: applyThemeFrom(get().preferences) }),
+
+  requestCloseTab: (id) => {
+    const state = get();
+    const askFirst = preferences.sessionsConfirmCloseRunning.get(state.preferences);
+    if (askFirst && sessionIsLive(state.sessions[id])) {
+      set({ confirmCloseTabId: id });
+      return;
+    }
+    state.closeTab(id);
+  },
+
+  confirmCloseTab: () => {
+    const id = get().confirmCloseTabId;
+    if (id !== null) {
+      get().closeTab(id);
+    }
+    set({ confirmCloseTabId: null });
+  },
+
+  cancelCloseTab: () => set({ confirmCloseTabId: null }),
 }));

@@ -16,6 +16,7 @@
 //! asserts that a stored keyring secret never reaches the database file, and
 //! that test must be extended for every new table.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -235,7 +236,37 @@ impl Storage {
             Ok(())
         })
     }
-}
+
+    /// Every stored UI preference as a key/value map (spec section 14).
+    ///
+    /// Values are opaque strings: parsing and defaults live in the frontend, so
+    /// a value written by an older build never breaks the database.
+    pub fn list_ui_preferences(&self) -> Result<HashMap<String, String>> {
+        self.with_conn(|connection| {
+            let mut statement = connection.prepare("SELECT key, value FROM ui_preferences")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut preferences = HashMap::new();
+            for row in rows {
+                let (key, value) = row?;
+                preferences.insert(key, value);
+            }
+            Ok(preferences)
+        })
+    }
+
+    /// Remove a UI preference so the setting falls back to its default.
+    ///
+    /// Deleting rather than storing an empty string keeps "unset" and "set to
+    /// empty" indistinguishable, which is what the Settings tab's
+    /// reset-to-default action needs.
+    pub fn delete_ui_preference(&self, key: &str) -> Result<()> {
+        self.with_conn(|connection| {
+            connection.execute("DELETE FROM ui_preferences WHERE key = ?1", params![key])?;
+            Ok(())
+        })
+    }}
 
 /// Current UTC time as an RFC 3339 timestamp with millisecond precision
 /// (for example `2026-09-14T09:31:07.412Z`).
