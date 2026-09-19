@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/Ryan-PG/RyGent/compare/v1.1.1...v1.2.0) (2026-09-19)
+
+
+### Features
+
+* add OpenAI Codex CLI as a supported agent ([5c0920c](https://github.com/Ryan-PG/RyGent/commit/5c0920c8084b2cd9c437f9a6780de30ac339d678))
+* add OpenAI Codex CLI as a supported agent ([c44a3b0](https://github.com/Ryan-PG/RyGent/commit/c44a3b042da5d2d21482fa80bad5d665749270ed)), closes [#3](https://github.com/Ryan-PG/RyGent/issues/3)
+
 ## [1.1.1](https://github.com/Ryan-PG/RyGent/compare/v1.1.0...v1.1.1) (2026-09-19)
 
 
