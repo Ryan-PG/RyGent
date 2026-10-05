@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/Ryan-PG/RyGent/compare/v1.2.0...v1.2.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* preserve terminal contents across tab switches ([e3d9020](https://github.com/Ryan-PG/RyGent/commit/e3d90208bfb95f3320b48c7e72926706912b442e))
+
 ## [1.2.0](https://github.com/Ryan-PG/RyGent/compare/v1.1.1...v1.2.0) (2026-09-19)
 
 
