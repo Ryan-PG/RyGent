@@ -151,8 +151,10 @@ export default function WorkspacePanel({ tab }: Props) {
 
       {/* Keyed by tab id so each workspace gets its own terminal (and therefore
           its own xterm instance, scrollback and PTY) rather than sharing one
-          that would be reused across tabs. Switching tabs remounts a different
-          terminal and leaves every other session running. */}
+          that would be reused across tabs. `App` keeps every open tab's panel
+          mounted and hides the inactive ones, so switching tabs preserves the
+          terminal (and its scrollback) instead of rebuilding an empty one, and
+          every other session keeps running. */}
       <SessionView key={tab.id} tab={tab} />
     </section>
   );

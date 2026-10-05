@@ -90,15 +90,38 @@ function App() {
     <div className="app-shell">
       <TabBar />
       <main className="app-main">
-        {activePanel === "providers" ? (
-          <ProvidersPanel />
-        ) : activePanel === "settings" ? (
-          <SettingsPanel />
-        ) : activeTab ? (
-          <WorkspacePanel tab={activeTab} />
-        ) : (
-          <EmptyState />
-        )}
+        {activePanel === "providers" ? <ProvidersPanel /> : null}
+        {activePanel === "settings" ? <SettingsPanel /> : null}
+
+        {/*
+          Every open tab is rendered, not only the active one, and the inactive
+          panels are hidden rather than unmounted.
+
+          This is what keeps a terminal alive across a tab switch. Unmounting a
+          `WorkspacePanel` disposes its xterm instance, so returning to the tab
+          would show a brand-new, empty terminal: the PTY in the Rust core keeps
+          running, but its earlier output was never replayed into the new
+          instance, and until the agent next redraws there is nothing on screen.
+          Keeping the panel mounted preserves the xterm buffer (scrollback
+          included) and the live output subscription, so a switch back shows
+          exactly what was there - and a background tab keeps receiving output.
+
+          `hidden` (not a class) is deliberate: the inactive panels leave the
+          accessibility tree, so a button in a background tab cannot be reached
+          by role. A closed tab drops out of `tabs` and unmounts for real, which
+          is the one case where the terminal *should* be disposed.
+        */}
+        {tabs.map((tab) => (
+          <div
+            key={tab.id}
+            className="tab-panel"
+            hidden={activePanel !== "workspaces" || tab.id !== activeTabId}
+          >
+            <WorkspacePanel tab={tab} />
+          </div>
+        ))}
+
+        {activePanel === "workspaces" && !activeTab ? <EmptyState /> : null}
       </main>
       <StatusBar />
 

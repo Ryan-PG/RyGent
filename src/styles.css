@@ -124,6 +124,23 @@ button {
   overflow: auto;
 }
 
+/*
+ * One wrapper per open tab. All of them stay mounted (App hides the inactive
+ * ones with the `hidden` attribute) so each terminal keeps its xterm instance
+ * and scrollback across a tab switch; `display: none` is restated here because
+ * the `display: flex` below would otherwise win over the UA's `[hidden]` rule.
+ */
+.tab-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
 /* ---------- Tab bar ---------- */
 
 .tabbar {
